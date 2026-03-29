@@ -41,6 +41,9 @@ class OptimizedLegalWorkflow:
 本系统基于公开法律文献和案例，不保证信息的完整性和时效性。
 """
     
+    # 检索结果相关度阈值
+    RELEVANCE_THRESHOLD = 0.3
+    
     def __init__(self, hybrid_retriever: HybridRetriever):
         """
         初始化工作流
@@ -83,6 +86,27 @@ class OptimizedLegalWorkflow:
             is_valid=True,
             reason="通过"
         )
+    
+    def _check_search_quality(self, search_results: List[SearchResult]) -> tuple[bool, str]:
+        """
+        检查检索结果质量
+        
+        Args:
+            search_results: 检索结果
+            
+        Returns:
+            (是否质量合格, 原因说明)
+        """
+        if not search_results:
+            return False, "未检索到相关文档"
+        
+        # 检查最高相关度分数
+        max_score = max(r.score for r in search_results) if search_results else 0
+        
+        if max_score < self.RELEVANCE_THRESHOLD:
+            return False, f"检索结果相关度过低（最高{max_score:.2f}，阈值{self.RELEVANCE_THRESHOLD}）"
+        
+        return True, "检索结果质量合格"
     
     def _build_context(self, search_results: List[SearchResult]) -> str:
         """
@@ -175,15 +199,66 @@ class OptimizedLegalWorkflow:
         
         search_results = self.hybrid_retriever.hybrid_search(query)
         
+        # 检查检索结果质量
+        is_quality_ok, quality_reason = self._check_search_quality(search_results)
+        
+        if not is_quality_ok:
+            # 检索结果质量不佳，直接使用基座大模型回答
+            logger.info(f"检索结果质量不佳，使用基座模型回答: {quality_reason}")
+            
+            system_prompt_general = """你是一个专业的法律咨询助手。请基于你的法律知识回答用户的问题。
+
+要求：
+1. 回答要准确、专业
+2. 如果不确定，请明确告知用户
+3. 建议用户咨询专业律师获取具体法律意见
+4. 回答要简洁明了"""
+
+            messages = [SystemMessage(content=system_prompt_general)]
+            
+            history = self.conversation_memory.get(session_id, [])
+            for msg in history[-4:]:
+                if msg.get("role") == "user":
+                    messages.append(HumanMessage(content=msg.get("content", "")))
+                elif msg.get("role") == "assistant":
+                    messages.append(AIMessage(content=msg.get("content", "")))
+            
+            messages.append(HumanMessage(content=f"用户问题：{query}"))
+            
+            try:
+                response = self.llm.invoke(messages)
+                answer = response.content
+                
+                self._update_memory(session_id, "user", query)
+                self._update_memory(session_id, "assistant", answer)
+                
+                return {
+                    "success": True,
+                    "answer": answer,
+                    "disclaimer": self.DISCLAIMER,
+                    "search_results": []
+                }
+                
+            except Exception as e:
+                logger.error(f"生成回答失败: {str(e)}")
+                return {
+                    "success": False,
+                    "answer": "抱歉，系统处理过程中出现错误，请稍后重试。",
+                    "disclaimer": self.DISCLAIMER,
+                    "search_results": []
+                }
+        
+        # 检索结果质量合格，正常流程
         context = self._build_context(search_results)
         history = self.conversation_memory.get(session_id, [])
         
-        system_prompt = """你是一个专业的法律咨询助手。请根据提供的法律条文和案例，回答用户的问题。
+        system_prompt = """你是一个专业的法律咨询助手。请根据系统检索到的法律条文和案例，回答用户的问题。
 
 要求：
 1. 回答要准确、专业、有法律依据
 2. 引用具体的法律条文时，直接写"第X条"
-3. 回答要简洁明了，避免冗长"""
+3. 回答要简洁明了，避免冗长
+4. 禁止说"根据您提供的"，直接陈述法律内容即可"""
 
         messages = [SystemMessage(content=system_prompt)]
         
@@ -251,17 +326,65 @@ class OptimizedLegalWorkflow:
         
         search_results = self.hybrid_retriever.hybrid_search(query)
         
+        # 检查检索结果质量
+        is_quality_ok, quality_reason = self._check_search_quality(search_results)
+        
+        if not is_quality_ok:
+            # 检索结果质量不佳，直接使用基座大模型回答
+            logger.info(f"检索结果质量不佳，使用基座模型回答: {quality_reason}")
+            
+            system_prompt_general = """你是一个专业的法律咨询助手。请基于你的法律知识回答用户的问题。
+
+要求：
+1. 回答要准确、专业
+2. 如果不确定，请明确告知用户
+3. 建议用户咨询专业律师获取具体法律意见
+4. 回答要简洁明了"""
+
+            messages = [SystemMessage(content=system_prompt_general)]
+            
+            history = self.conversation_memory.get(session_id, [])
+            for msg in history[-4:]:
+                if msg.get("role") == "user":
+                    messages.append(HumanMessage(content=msg.get("content", "")))
+                elif msg.get("role") == "assistant":
+                    messages.append(AIMessage(content=msg.get("content", "")))
+            
+            messages.append(HumanMessage(content=f"用户问题：{query}"))
+            
+            try:
+                full_answer = ""
+                for chunk in self.llm.stream(messages):
+                    if chunk.content:
+                        full_answer += chunk.content
+                        yield f"data: {json.dumps({'type': 'answer', 'content': chunk.content}, ensure_ascii=False)}\n\n"
+                
+                self._update_memory(session_id, "user", query)
+                self._update_memory(session_id, "assistant", full_answer)
+                
+                yield f"data: {json.dumps({'type': 'disclaimer', 'content': self.DISCLAIMER}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+                
+            except Exception as e:
+                logger.error(f"生成回答失败: {str(e)}")
+                yield f"data: {json.dumps({'type': 'error', 'content': '抱歉，系统处理过程中出现错误，请稍后重试。'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+            
+            return
+        
+        # 检索结果质量合格，正常流程
         yield f"data: {json.dumps({'type': 'status', 'content': '正在生成回答...'}, ensure_ascii=False)}\n\n"
         
         context = self._build_context(search_results)
         history = self.conversation_memory.get(session_id, [])
         
-        system_prompt = """你是一个专业的法律咨询助手。请根据提供的法律条文和案例，回答用户的问题。
+        system_prompt = """你是一个专业的法律咨询助手。请根据系统检索到的法律条文和案例，回答用户的问题。
 
 要求：
 1. 回答要准确、专业、有法律依据
 2. 引用具体的法律条文时，直接写"第X条"
-3. 回答要简洁明了，避免冗长"""
+3. 回答要简洁明了，避免冗长
+4. 禁止说"根据您提供的"，直接陈述法律内容即可"""
 
         messages = [SystemMessage(content=system_prompt)]
         
