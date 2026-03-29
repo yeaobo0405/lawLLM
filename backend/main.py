@@ -60,9 +60,11 @@ class QueryResponse(BaseModel):
 
 class FileFilterRequest(BaseModel):
     """文件筛选请求"""
+    doc_type: Optional[str] = Field(None, description="文档类型: law/case")
     law_name: Optional[str] = Field(None, description="法律名称")
     case_type: Optional[str] = Field(None, description="案件类型")
     article_number: Optional[str] = Field(None, description="法条编号")
+    case_number: Optional[str] = Field(None, description="案号")
 
 
 class FileInfo(BaseModel):
@@ -72,6 +74,7 @@ class FileInfo(BaseModel):
     law_name: str = Field(default="", description="法律名称")
     case_type: str = Field(default="", description="案件类型")
     article_number: str = Field(default="", description="法条编号")
+    case_number: str = Field(default="", description="案号")
     doc_type: str = Field(default="", description="文档类型")
 
 
@@ -263,7 +266,7 @@ async def clear_conversation(session_id: str = Query(default="default", descript
 async def filter_files(request: FileFilterRequest):
     """
     文件筛选接口
-    支持按法律名称、案件类型、法条编号多条件组合筛选
+    支持按文档类型、法律名称、案件类型、法条编号、案号多条件组合筛选
     """
     global milvus_manager
     
@@ -272,9 +275,11 @@ async def filter_files(request: FileFilterRequest):
     
     try:
         results = milvus_manager.filter_by_metadata(
+            doc_type=request.doc_type,
             law_name=request.law_name,
             case_type=request.case_type,
-            article_number=request.article_number
+            article_number=request.article_number,
+            case_number=request.case_number
         )
         
         file_map = {}
@@ -287,6 +292,7 @@ async def filter_files(request: FileFilterRequest):
                     law_name=item.get("law_name", ""),
                     case_type=item.get("case_type", ""),
                     article_number=item.get("article_number", ""),
+                    case_number=item.get("case_number", ""),
                     doc_type=item.get("doc_type", "")
                 )
         
@@ -323,6 +329,7 @@ async def get_file_list():
                 law_name=f.get("law_name", ""),
                 case_type=f.get("case_type", ""),
                 article_number=f.get("article_number", ""),
+                case_number=f.get("case_number", ""),
                 doc_type=f.get("doc_type", "")
             )
             for f in files

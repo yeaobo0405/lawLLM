@@ -21,15 +21,31 @@
         </div>
         <div class="file-info">
           <div class="file-name">{{ file.file_name }}</div>
-          <div class="file-meta">
-            <span v-if="file.law_name" class="meta-item">
+          <!-- 法律法规文件元信息 -->
+          <div v-if="file.doc_type === 'law'" class="file-meta">
+            <span v-if="file.law_name" class="meta-item law-name">
               {{ file.law_name }}
-            </span>
-            <span v-if="file.case_type" class="meta-item">
-              {{ file.case_type }}
             </span>
             <span v-if="file.article_number" class="meta-item">
               第{{ file.article_number }}条
+            </span>
+          </div>
+          <!-- 案例文书文件元信息 -->
+          <div v-else-if="file.doc_type === 'case'" class="file-meta">
+            <span v-if="file.case_number" class="meta-item case-number">
+              {{ file.case_number }}
+            </span>
+            <span v-if="file.case_type" class="meta-item case-type">
+              {{ file.case_type }}
+            </span>
+            <span v-if="file.law_name" class="meta-item">
+              {{ file.law_name }}
+            </span>
+          </div>
+          <!-- 其他类型文件 -->
+          <div v-else class="file-meta">
+            <span v-if="file.law_name" class="meta-item">
+              {{ file.law_name }}
             </span>
           </div>
         </div>
@@ -65,7 +81,7 @@ export default {
       if (docType === 'law') {
         return '📜'
       } else if (docType === 'case') {
-        return '📋'
+        return '⚖️'
       }
       return '📄'
     }
@@ -99,13 +115,13 @@ export default {
 
 .list-header h3 {
   font-size: 16px;
-  font-weight: 600;
   color: #2d3748;
+  margin: 0;
 }
 
 .file-count {
-  font-size: 12px;
-  color: #a0aec0;
+  font-size: 13px;
+  color: #718096;
 }
 
 .list-container {
@@ -115,8 +131,10 @@ export default {
 }
 
 .empty-list {
-  text-align: center;
-  padding: 40px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
   color: #a0aec0;
 }
 
@@ -127,15 +145,16 @@ export default {
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.2s;
-  gap: 12px;
+  margin-bottom: 8px;
 }
 
 .file-item:hover {
-  background-color: #f7fafc;
+  background: #f7fafc;
 }
 
 .file-icon {
   font-size: 24px;
+  margin-right: 12px;
   flex-shrink: 0;
 }
 
@@ -148,6 +167,7 @@ export default {
   font-size: 14px;
   font-weight: 500;
   color: #2d3748;
+  margin-bottom: 4px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -156,53 +176,66 @@ export default {
 .file-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 4px;
+  gap: 6px;
+  font-size: 12px;
 }
 
 .meta-item {
-  font-size: 12px;
-  color: #718096;
-  background-color: #edf2f7;
   padding: 2px 8px;
-  border-radius: 3px;
+  background: #edf2f7;
+  border-radius: 4px;
+  color: #4a5568;
+}
+
+.meta-item.law-name {
+  background: #ebf8ff;
+  color: #2b6cb0;
+}
+
+.meta-item.case-number {
+  background: #faf5ff;
+  color: #6b46c1;
+  font-weight: 500;
+}
+
+.meta-item.case-type {
+  background: #f0fff4;
+  color: #276749;
 }
 
 .file-action {
   flex-shrink: 0;
+  margin-left: 10px;
 }
 
 .action-text {
-  font-size: 12px;
-  color: #3182ce;
+  font-size: 13px;
+  color: #2c5282;
   font-weight: 500;
 }
 
-.file-item:hover .action-text {
-  text-decoration: underline;
-}
-
 .loading-state {
-  flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 40px;
-  color: #a0aec0;
+  height: 200px;
+  color: #718096;
 }
 
 .loading-spinner {
   width: 32px;
   height: 32px;
   border: 3px solid #e2e8f0;
-  border-top-color: #3182ce;
+  border-top-color: #2c5282;
   border-radius: 50%;
   animation: spin 1s linear infinite;
-  margin-bottom: 15px;
+  margin-bottom: 12px;
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

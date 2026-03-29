@@ -225,17 +225,21 @@ class MilvusManager:
     
     def filter_by_metadata(
         self,
+        doc_type: Optional[str] = None,
         law_name: Optional[str] = None,
         case_type: Optional[str] = None,
-        article_number: Optional[str] = None
+        article_number: Optional[str] = None,
+        case_number: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         按元数据筛选文档
         
         Args:
+            doc_type: 文档类型 (law/case)
             law_name: 法律名称
             case_type: 案件类型
             article_number: 法条编号
+            case_number: 案号
             
         Returns:
             筛选结果列表
@@ -249,12 +253,16 @@ class MilvusManager:
             filter_expr = ""
             conditions = []
             
+            if doc_type:
+                conditions.append(f'doc_type == "{doc_type}"')
             if law_name:
                 conditions.append(f'law_name like "%{law_name}%"')
             if case_type:
                 conditions.append(f'case_type == "{case_type}"')
             if article_number:
                 conditions.append(f'article_number == "{article_number}"')
+            if case_number:
+                conditions.append(f'case_number like "%{case_number}%"')
             
             if conditions:
                 filter_expr = " and ".join(conditions)
@@ -294,7 +302,7 @@ class MilvusManager:
             results = self.collection.query(
                 expr="id >= 0",
                 output_fields=["law_name", "case_type", "article_number",
-                              "file_path", "file_name", "doc_type"]
+                              "case_number", "file_path", "file_name", "doc_type"]
             )
             
             file_map = {}
@@ -307,6 +315,7 @@ class MilvusManager:
                         "law_name": item.get("law_name", ""),
                         "case_type": item.get("case_type", ""),
                         "article_number": item.get("article_number", ""),
+                        "case_number": item.get("case_number", ""),
                         "doc_type": item.get("doc_type", "")
                     }
             

@@ -5,36 +5,78 @@
       <button class="reset-btn" @click="handleReset">重置</button>
     </div>
     
-    <div class="filter-form">
+    <!-- 文档类型选择 -->
+    <div class="doc-type-tabs">
+      <button 
+        :class="['tab-btn', { active: docType === 'law' }]"
+        @click="docType = 'law'; handleFilter()"
+      >
+        📖 法律法规
+      </button>
+      <button 
+        :class="['tab-btn', { active: docType === 'case' }]"
+        @click="docType = 'case'; handleFilter()"
+      >
+        ⚖️ 案例文书
+      </button>
+    </div>
+    
+    <!-- 法律法规筛选 -->
+    <div v-if="docType === 'law'" class="filter-form">
       <div class="filter-item">
         <label>法律名称</label>
         <input 
           type="text" 
-          v-model="filters.lawName"
+          v-model="lawFilters.lawName"
           placeholder="请输入法律名称"
           @input="debounceFilter"
         />
       </div>
       
       <div class="filter-item">
+        <label>法条编号</label>
+        <input 
+          type="text" 
+          v-model="lawFilters.articleNumber"
+          placeholder="请输入法条编号"
+          @input="debounceFilter"
+        />
+      </div>
+      
+      <button class="filter-btn" @click="handleFilter">筛选</button>
+    </div>
+    
+    <!-- 案例文书筛选 -->
+    <div v-if="docType === 'case'" class="filter-form">
+      <div class="filter-item">
         <label>案件类型</label>
-        <select v-model="filters.caseType" @change="handleFilter">
+        <select v-model="caseFilters.caseType" @change="handleFilter">
           <option value="">全部</option>
           <option value="民事">民事</option>
           <option value="刑事">刑事</option>
           <option value="行政">行政</option>
-          <option value="经济">经济</option>
           <option value="知识产权">知识产权</option>
-          <option value="劳动争议">劳动争议</option>
+          <option value="劳动">劳动</option>
+          <option value="公司">公司</option>
         </select>
       </div>
       
       <div class="filter-item">
-        <label>法条编号</label>
+        <label>案号</label>
         <input 
           type="text" 
-          v-model="filters.articleNumber"
-          placeholder="请输入法条编号"
+          v-model="caseFilters.caseNumber"
+          placeholder="请输入案号"
+          @input="debounceFilter"
+        />
+      </div>
+      
+      <div class="filter-item">
+        <label>涉及法律</label>
+        <input 
+          type="text" 
+          v-model="caseFilters.relatedLaw"
+          placeholder="请输入涉及的法律名称"
           @input="debounceFilter"
         />
       </div>
@@ -51,10 +93,20 @@ export default {
   name: 'FileFilter',
   emits: ['filter'],
   setup(props, { emit }) {
-    const filters = reactive({
+    // 文档类型：law-法律法规, case-案例文书
+    const docType = ref('law')
+    
+    // 法律法规筛选条件
+    const lawFilters = reactive({
       lawName: '',
-      caseType: '',
       articleNumber: ''
+    })
+    
+    // 案例文书筛选条件
+    const caseFilters = reactive({
+      caseType: '',
+      caseNumber: '',
+      relatedLaw: ''
     })
 
     let debounceTimer = null
@@ -69,30 +121,51 @@ export default {
     }
 
     const handleFilter = () => {
-      const filterParams = {}
+      const filterParams = {
+        doc_type: docType.value
+      }
       
-      if (filters.lawName.trim()) {
-        filterParams.law_name = filters.lawName.trim()
-      }
-      if (filters.caseType) {
-        filterParams.case_type = filters.caseType
-      }
-      if (filters.articleNumber.trim()) {
-        filterParams.article_number = filters.articleNumber.trim()
+      if (docType.value === 'law') {
+        // 法律法规筛选
+        if (lawFilters.lawName.trim()) {
+          filterParams.law_name = lawFilters.lawName.trim()
+        }
+        if (lawFilters.articleNumber.trim()) {
+          filterParams.article_number = lawFilters.articleNumber.trim()
+        }
+      } else {
+        // 案例文书筛选
+        if (caseFilters.caseType) {
+          filterParams.case_type = caseFilters.caseType
+        }
+        if (caseFilters.caseNumber.trim()) {
+          filterParams.case_number = caseFilters.caseNumber.trim()
+        }
+        if (caseFilters.relatedLaw.trim()) {
+          filterParams.law_name = caseFilters.relatedLaw.trim()
+        }
       }
       
       emit('filter', filterParams)
     }
 
     const handleReset = () => {
-      filters.lawName = ''
-      filters.caseType = ''
-      filters.articleNumber = ''
-      emit('filter', {})
+      // 重置法律法规筛选
+      lawFilters.lawName = ''
+      lawFilters.articleNumber = ''
+      
+      // 重置案例文书筛选
+      caseFilters.caseType = ''
+      caseFilters.caseNumber = ''
+      caseFilters.relatedLaw = ''
+      
+      emit('filter', { doc_type: docType.value })
     }
 
     return {
-      filters,
+      docType,
+      lawFilters,
+      caseFilters,
       debounceFilter,
       handleFilter,
       handleReset
@@ -104,8 +177,8 @@ export default {
 <style scoped>
 .file-filter {
   background: white;
-  border-radius: 8px;
   padding: 20px;
+  border-radius: 8px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
@@ -114,36 +187,63 @@ export default {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 20px;
-  padding-bottom: 15px;
-  border-bottom: 1px solid #e2e8f0;
 }
 
 .filter-header h3 {
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 18px;
   color: #2d3748;
+  margin: 0;
 }
 
 .reset-btn {
-  background: none;
-  border: 1px solid #e2e8f0;
-  color: #718096;
   padding: 6px 12px;
+  background: #edf2f7;
+  border: none;
   border-radius: 4px;
-  font-size: 12px;
+  color: #4a5568;
   cursor: pointer;
-  transition: all 0.2s;
+  font-size: 13px;
+  transition: all 0.3s;
 }
 
 .reset-btn:hover {
-  background-color: #f7fafc;
+  background: #e2e8f0;
+}
+
+.doc-type-tabs {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.tab-btn {
+  flex: 1;
+  padding: 12px 20px;
+  border: 2px solid #e2e8f0;
+  background: white;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  color: #4a5568;
+  transition: all 0.3s;
+}
+
+.tab-btn:hover {
   border-color: #cbd5e0;
+  background: #f7fafc;
+}
+
+.tab-btn.active {
+  border-color: #2c5282;
+  background: #2c5282;
+  color: white;
 }
 
 .filter-form {
   display: flex;
   flex-direction: column;
-  gap: 15px;
+  gap: 16px;
 }
 
 .filter-item {
@@ -164,34 +264,30 @@ export default {
   border: 1px solid #e2e8f0;
   border-radius: 6px;
   font-size: 14px;
-  transition: border-color 0.2s;
+  transition: all 0.3s;
 }
 
 .filter-item input:focus,
 .filter-item select:focus {
   outline: none;
-  border-color: #3182ce;
-}
-
-.filter-item input::placeholder {
-  color: #a0aec0;
+  border-color: #2c5282;
+  box-shadow: 0 0 0 3px rgba(44, 82, 130, 0.1);
 }
 
 .filter-btn {
-  background: linear-gradient(135deg, #2c5282 0%, #1a365d 100%);
+  padding: 12px 24px;
+  background: #2c5282;
   color: white;
   border: none;
-  padding: 12px;
   border-radius: 6px;
+  cursor: pointer;
   font-size: 14px;
   font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
-  margin-top: 5px;
+  transition: all 0.3s;
+  margin-top: 8px;
 }
 
 .filter-btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(44, 82, 130, 0.3);
+  background: #1a365d;
 }
 </style>
