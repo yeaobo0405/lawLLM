@@ -11,6 +11,7 @@ from langchain.schema import HumanMessage, AIMessage, SystemMessage
 
 from config import settings
 from modules.rag_retriever import HybridRetriever, SearchResult
+from modules.memory_store import ConversationMemory
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -61,7 +62,7 @@ class OptimizedLegalWorkflow:
             streaming=True
         )
         
-        self.conversation_memory: Dict[str, List[Dict[str, str]]] = {}
+        self.memory_store = ConversationMemory()
     
     def _check_intent_fast(self, query: str) -> IntentResult:
         """
@@ -176,13 +177,14 @@ class OptimizedLegalWorkflow:
         
         return answer
     
-    def run_fast(self, query: str, session_id: str = "default") -> Dict[str, Any]:
+    def run_fast(self, query: str, session_id: str = "default", user_id: int = 0) -> Dict[str, Any]:
         """
         快速运行工作流（非流式）
         
         Args:
             query: 用户提问
             session_id: 会话ID
+            user_id: 用户ID
             
         Returns:
             工作流执行结果
@@ -199,11 +201,9 @@ class OptimizedLegalWorkflow:
         
         search_results = self.hybrid_retriever.hybrid_search(query)
         
-        # 检查检索结果质量
         is_quality_ok, quality_reason = self._check_search_quality(search_results)
         
         if not is_quality_ok:
-            # 检索结果质量不佳，直接使用基座大模型回答
             logger.info(f"检索结果质量不佳，使用基座模型回答: {quality_reason}")
             
             system_prompt_general = """你是一个专业的法律咨询助手。请基于你的法律知识回答用户的问题。
@@ -216,8 +216,8 @@ class OptimizedLegalWorkflow:
 
             messages = [SystemMessage(content=system_prompt_general)]
             
-            history = self.conversation_memory.get(session_id, [])
-            for msg in history[-4:]:
+            history = self.memory_store.get_history(session_id, limit=4, user_id=user_id)
+            for msg in history:
                 if msg.get("role") == "user":
                     messages.append(HumanMessage(content=msg.get("content", "")))
                 elif msg.get("role") == "assistant":
@@ -229,8 +229,8 @@ class OptimizedLegalWorkflow:
                 response = self.llm.invoke(messages)
                 answer = response.content
                 
-                self._update_memory(session_id, "user", query)
-                self._update_memory(session_id, "assistant", answer)
+                self.memory_store.add_message(session_id, "user", query, user_id)
+                self.memory_store.add_message(session_id, "assistant", answer, user_id)
                 
                 return {
                     "success": True,
@@ -248,9 +248,8 @@ class OptimizedLegalWorkflow:
                     "search_results": []
                 }
         
-        # 检索结果质量合格，正常流程
         context = self._build_context(search_results)
-        history = self.conversation_memory.get(session_id, [])
+        history = self.memory_store.get_history(session_id, limit=4, user_id=user_id)
         
         system_prompt = """你是一个专业的法律咨询助手。请根据系统检索到的法律条文和案例，回答用户的问题。
 
@@ -262,7 +261,7 @@ class OptimizedLegalWorkflow:
 
         messages = [SystemMessage(content=system_prompt)]
         
-        for msg in history[-4:]:
+        for msg in history:
             if msg.get("role") == "user":
                 messages.append(HumanMessage(content=msg.get("content", "")))
             elif msg.get("role") == "assistant":
@@ -283,8 +282,8 @@ class OptimizedLegalWorkflow:
             
             answer = self._add_source_buttons(answer, search_results)
             
-            self._update_memory(session_id, "user", query)
-            self._update_memory(session_id, "assistant", answer)
+            self.memory_store.add_message(session_id, "user", query, user_id)
+            self.memory_store.add_message(session_id, "assistant", answer, user_id)
             
             return {
                 "success": True,
@@ -302,13 +301,14 @@ class OptimizedLegalWorkflow:
                 "search_results": []
             }
     
-    def run_stream(self, query: str, session_id: str = "default") -> Generator[str, None, None]:
+    def run_stream(self, query: str, session_id: str = "default", user_id: int = 0) -> Generator[str, None, None]:
         """
         流式运行工作流
         
         Args:
             query: 用户提问
             session_id: 会话ID
+            user_id: 用户ID
             
         Yields:
             流式输出的文本块
@@ -326,11 +326,9 @@ class OptimizedLegalWorkflow:
         
         search_results = self.hybrid_retriever.hybrid_search(query)
         
-        # 检查检索结果质量
         is_quality_ok, quality_reason = self._check_search_quality(search_results)
         
         if not is_quality_ok:
-            # 检索结果质量不佳，直接使用基座大模型回答
             logger.info(f"检索结果质量不佳，使用基座模型回答: {quality_reason}")
             
             system_prompt_general = """你是一个专业的法律咨询助手。请基于你的法律知识回答用户的问题。
@@ -343,8 +341,8 @@ class OptimizedLegalWorkflow:
 
             messages = [SystemMessage(content=system_prompt_general)]
             
-            history = self.conversation_memory.get(session_id, [])
-            for msg in history[-4:]:
+            history = self.memory_store.get_history(session_id, limit=4, user_id=user_id)
+            for msg in history:
                 if msg.get("role") == "user":
                     messages.append(HumanMessage(content=msg.get("content", "")))
                 elif msg.get("role") == "assistant":
@@ -359,8 +357,8 @@ class OptimizedLegalWorkflow:
                         full_answer += chunk.content
                         yield f"data: {json.dumps({'type': 'answer', 'content': chunk.content}, ensure_ascii=False)}\n\n"
                 
-                self._update_memory(session_id, "user", query)
-                self._update_memory(session_id, "assistant", full_answer)
+                self.memory_store.add_message(session_id, "user", query, user_id)
+                self.memory_store.add_message(session_id, "assistant", full_answer, user_id)
                 
                 yield f"data: {json.dumps({'type': 'disclaimer', 'content': self.DISCLAIMER}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
@@ -372,11 +370,10 @@ class OptimizedLegalWorkflow:
             
             return
         
-        # 检索结果质量合格，正常流程
         yield f"data: {json.dumps({'type': 'status', 'content': '正在生成回答...'}, ensure_ascii=False)}\n\n"
         
         context = self._build_context(search_results)
-        history = self.conversation_memory.get(session_id, [])
+        history = self.memory_store.get_history(session_id, limit=4, user_id=user_id)
         
         system_prompt = """你是一个专业的法律咨询助手。请根据系统检索到的法律条文和案例，回答用户的问题。
 
@@ -388,7 +385,7 @@ class OptimizedLegalWorkflow:
 
         messages = [SystemMessage(content=system_prompt)]
         
-        for msg in history[-4:]:
+        for msg in history:
             if msg.get("role") == "user":
                 messages.append(HumanMessage(content=msg.get("content", "")))
             elif msg.get("role") == "assistant":
@@ -412,8 +409,8 @@ class OptimizedLegalWorkflow:
             
             full_answer = self._add_source_buttons(full_answer, search_results)
             
-            self._update_memory(session_id, "user", query)
-            self._update_memory(session_id, "assistant", full_answer)
+            self.memory_store.add_message(session_id, "user", query, user_id)
+            self.memory_store.add_message(session_id, "assistant", full_answer, user_id)
             
             yield f"data: {json.dumps({'type': 'replace', 'content': full_answer}, ensure_ascii=False)}\n\n"
             
@@ -424,32 +421,13 @@ class OptimizedLegalWorkflow:
             logger.error(f"流式工作流执行失败: {str(e)}")
             yield f"data: {json.dumps({'type': 'error', 'content': '抱歉，系统处理过程中出现错误，请稍后重试。'}, ensure_ascii=False)}\n\n"
     
-    def _update_memory(self, session_id: str, role: str, content: str):
-        """
-        更新对话记忆
-        
-        Args:
-            session_id: 会话ID
-            role: 角色（user/assistant）
-            content: 内容
-        """
-        if session_id not in self.conversation_memory:
-            self.conversation_memory[session_id] = []
-        
-        self.conversation_memory[session_id].append({
-            "role": role,
-            "content": content
-        })
-        
-        if len(self.conversation_memory[session_id]) > 20:
-            self.conversation_memory[session_id] = self.conversation_memory[session_id][-20:]
-    
-    def clear_memory(self, session_id: str = "default"):
+    def clear_memory(self, session_id: str = "default", user_id: int = 0):
         """
         清除对话记忆
         
         Args:
             session_id: 会话ID
+            user_id: 用户ID
         """
-        if session_id in self.conversation_memory:
-            del self.conversation_memory[session_id]
+        self.memory_store.clear_history(session_id, user_id)
+        logger.info(f"已清除会话记忆: {session_id}")

@@ -5,10 +5,10 @@
 import os
 import logging
 import uuid
-from typing import List, Optional
+from typing import List, Optional, Dict
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, BackgroundTasks, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -18,6 +18,7 @@ from modules.rag_retriever import MilvusManager, HybridRetriever, EmbeddingGener
 from modules.langgraph_workflow import LegalWorkflow
 from modules.optimized_workflow import OptimizedLegalWorkflow
 from modules.document_processor import DocumentProcessor
+from modules.auth import AuthManager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -41,6 +42,23 @@ embedding_generator: Optional[EmbeddingGenerator] = None
 hybrid_retriever: Optional[HybridRetriever] = None
 workflow: Optional[LegalWorkflow] = None
 optimized_workflow: Optional[OptimizedLegalWorkflow] = None
+auth_manager: Optional[AuthManager] = None
+
+
+class LoginRequest(BaseModel):
+    """登录请求"""
+    username: str = Field(..., description="用户名")
+    password: str = Field(..., description="密码")
+
+
+class LoginResponse(BaseModel):
+    """登录响应"""
+    success: bool = Field(..., description="是否成功")
+    token: Optional[str] = Field(None, description="认证Token")
+    user_id: Optional[int] = Field(None, description="用户ID")
+    username: Optional[str] = Field(None, description="用户名")
+    expires_at: Optional[str] = Field(None, description="Token过期时间")
+    message: str = Field(..., description="提示信息")
 
 
 class QueryRequest(BaseModel):
@@ -116,10 +134,12 @@ async def startup_event():
     """
     应用启动时初始化
     """
-    global milvus_manager, embedding_generator, hybrid_retriever, workflow, optimized_workflow
+    global milvus_manager, embedding_generator, hybrid_retriever, workflow, optimized_workflow, auth_manager
     
     try:
         logger.info("正在初始化系统组件...")
+        
+        auth_manager = AuthManager()
         
         milvus_manager = MilvusManager()
         if not milvus_manager.connect():
@@ -161,12 +181,90 @@ async def shutdown_event():
     logger.info("系统资源已释放")
 
 
+def get_current_user(authorization: Optional[str] = Header(None)) -> Dict:
+    """
+    获取当前登录用户（依赖项）
+    
+    Args:
+        authorization: Authorization头
+        
+    Returns:
+        用户信息字典
+        
+    Raises:
+        HTTPException: 未登录或Token无效
+    """
+    if not authorization:
+        raise HTTPException(status_code=401, detail="未登录")
+    
+    token = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else authorization
+    
+    user_info = auth_manager.verify_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Token无效或已过期")
+    
+    return user_info
+
+
 @app.get("/", tags=["系统"])
 async def root():
     """
     根路径
     """
     return {"message": "法律智能问答系统API", "version": "1.0.0"}
+
+
+@app.post("/api/auth/login", response_model=LoginResponse, tags=["认证"])
+async def login(request: LoginRequest):
+    """
+    用户登录
+    """
+    global auth_manager
+    
+    if not auth_manager:
+        raise HTTPException(status_code=503, detail="系统未初始化")
+    
+    result = auth_manager.login(request.username, request.password)
+    
+    if result:
+        return LoginResponse(
+            success=True,
+            token=result["token"],
+            user_id=result["user_id"],
+            username=result["username"],
+            expires_at=result["expires_at"],
+            message="登录成功"
+        )
+    else:
+        return LoginResponse(
+            success=False,
+            message="用户名或密码错误"
+        )
+
+
+@app.post("/api/auth/logout", tags=["认证"])
+async def logout(authorization: Optional[str] = Header(None)):
+    """
+    用户登出
+    """
+    global auth_manager
+    
+    if not auth_manager:
+        raise HTTPException(status_code=503, detail="系统未初始化")
+    
+    if authorization:
+        token = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else authorization
+        auth_manager.logout(token)
+    
+    return {"success": True, "message": "已登出"}
+
+
+@app.get("/api/auth/me", tags=["认证"])
+async def get_current_user_info(user: Dict = Depends(get_current_user)):
+    """
+    获取当前用户信息
+    """
+    return {"success": True, "user": user}
 
 
 @app.get("/api/system/status", response_model=SystemStatus, tags=["系统"])
@@ -197,7 +295,7 @@ async def get_system_status():
 
 
 @app.post("/api/legal/query", response_model=QueryResponse, tags=["法律咨询"])
-async def legal_query(request: QueryRequest):
+async def legal_query(request: QueryRequest, user: Dict = Depends(get_current_user)):
     """
     用户提问接口（优化版，非流式）
     接收用户提问，返回法律咨询回答
@@ -208,9 +306,10 @@ async def legal_query(request: QueryRequest):
         raise HTTPException(status_code=503, detail="系统未初始化完成，请稍后重试")
     
     try:
+        user_id = user["user_id"]
         session_id = request.session_id or str(uuid.uuid4())
         
-        result = optimized_workflow.run_fast(request.query, session_id)
+        result = optimized_workflow.run_fast(request.query, session_id, user_id)
         
         return QueryResponse(
             success=result.get("success", False),
@@ -226,7 +325,7 @@ async def legal_query(request: QueryRequest):
 
 
 @app.post("/api/legal/query/stream", tags=["法律咨询"])
-async def legal_query_stream(request: QueryRequest):
+async def legal_query_stream(request: QueryRequest, user: Dict = Depends(get_current_user)):
     """
     用户提问接口（流式输出）
     接收用户提问，流式返回法律咨询回答
@@ -236,10 +335,11 @@ async def legal_query_stream(request: QueryRequest):
     if optimized_workflow is None:
         raise HTTPException(status_code=503, detail="系统未初始化完成，请稍后重试")
     
+    user_id = user["user_id"]
     session_id = request.session_id or str(uuid.uuid4())
     
     return StreamingResponse(
-        optimized_workflow.run_stream(request.query, session_id),
+        optimized_workflow.run_stream(request.query, session_id, user_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -250,16 +350,70 @@ async def legal_query_stream(request: QueryRequest):
 
 
 @app.post("/api/conversation/clear", tags=["法律咨询"])
-async def clear_conversation(session_id: str = Query(default="default", description="会话ID")):
+async def clear_conversation(
+    session_id: str = Query(default="default", description="会话ID"),
+    user: Dict = Depends(get_current_user)
+):
     """
     清除对话历史
     """
-    global workflow
+    global optimized_workflow
     
-    if workflow:
-        workflow.clear_memory(session_id)
+    if optimized_workflow:
+        optimized_workflow.clear_memory(session_id, user["user_id"])
     
     return {"success": True, "message": "对话历史已清除"}
+
+
+@app.get("/api/conversation/sessions", tags=["法律咨询"])
+async def get_user_sessions(user: Dict = Depends(get_current_user)):
+    """
+    获取用户的所有会话列表
+    """
+    global optimized_workflow
+    
+    if optimized_workflow:
+        sessions = optimized_workflow.memory_store.get_user_sessions(user["user_id"])
+        return {"success": True, "sessions": sessions}
+    
+    return {"success": False, "sessions": []}
+
+
+@app.get("/api/conversation/messages", tags=["法律咨询"])
+async def get_session_messages(
+    session_id: str = Query(..., description="会话ID"),
+    user: Dict = Depends(get_current_user)
+):
+    """
+    获取会话的所有消息
+    """
+    global optimized_workflow
+    
+    if optimized_workflow:
+        messages = optimized_workflow.memory_store.get_session_messages(session_id, user["user_id"])
+        return {"success": True, "messages": messages}
+    
+    return {"success": False, "messages": []}
+
+
+@app.delete("/api/conversation/session", tags=["法律咨询"])
+async def delete_session(
+    session_id: str = Query(..., description="会话ID"),
+    user: Dict = Depends(get_current_user)
+):
+    """
+    删除指定会话
+    """
+    global optimized_workflow
+    
+    if optimized_workflow:
+        success = optimized_workflow.memory_store.delete_session(session_id, user["user_id"])
+        if success:
+            return {"success": True, "message": "会话已删除"}
+        else:
+            return {"success": False, "message": "会话不存在或无权删除"}
+    
+    return {"success": False, "message": "系统未初始化"}
 
 
 @app.post("/api/file/filter", response_model=FileListResponse, tags=["文件管理"])

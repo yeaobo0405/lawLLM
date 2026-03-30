@@ -1,6 +1,6 @@
 # 法律智能问答系统
 
-基于RAG（检索增强生成）的法律智能问答系统，支持多轮对话、法条溯源、混合检索、案例检索等功能。
+基于RAG（检索增强生成）的法律智能问答系统，支持用户登录、多轮对话、法条溯源、混合检索、案例检索等功能。
 
 ## 系统架构
 
@@ -11,9 +11,14 @@ law03/
 │   │   ├── document_processor.py     # 文档处理与嵌入生成
 │   │   ├── rag_retriever.py          # 混合检索（向量+BM25）
 │   │   ├── optimized_workflow.py     # 优化版问答工作流
+│   │   ├── memory_store.py           # 对话记忆持久化存储
+│   │   ├── auth.py                   # 用户认证模块
 │   │   └── langgraph_workflow.py     # LangGraph工作流（备用）
 │   ├── utils/
 │   │   └── exception_handler.py      # 异常处理
+│   ├── data/                         # 数据存储目录
+│   │   ├── conversation_memory.db    # 对话记忆数据库
+│   │   └── users.db                  # 用户认证数据库
 │   ├── main.py                       # FastAPI主程序
 │   ├── config.py                     # 配置文件
 │   ├── run.py                        # 启动脚本
@@ -23,6 +28,7 @@ law03/
 ├── frontend/                          # 前端界面
 │   ├── src/
 │   │   ├── components/               # Vue组件
+│   │   │   ├── LoginView.vue         # 登录界面
 │   │   │   ├── AnswerDisplay.vue     # 回答展示（含查看原文按钮）
 │   │   │   ├── FileFilter.vue        # 文件筛选（法律法规/案例文书分类）
 │   │   │   ├── FileList.vue          # 文件列表
@@ -84,25 +90,35 @@ law03/
 
 ## 核心功能
 
-### 1. 智能问答
+### 1. 用户认证
+- 用户登录/登出功能
+- JWT Token认证机制
+- Token有效期24小时
+- 默认管理员账户：admin / 123456
+- 用户会话隔离，每个用户只能查看自己的对话历史
+
+### 2. 智能问答
 - 流式输出回答，实时显示生成内容
-- 多轮对话上下文记忆
+- **持久化对话记忆**：使用SQLite存储对话历史，重启后不丢失
+- **历史会话侧边栏**：左侧显示历史会话列表，按时间命名（今天/昨天/具体日期）
+- **会话管理**：支持新建会话、切换会话、删除会话
+- 多轮对话上下文记忆（最近4轮）
 - 法条引用自动添加"查看原文"按钮
 - 点击按钮可预览法条完整内容
 - 检索质量不佳时自动使用基座大模型回答
 
-### 2. 混合检索
+### 3. 混合检索
 - **向量检索**: 基于语义相似度，使用Qwen3-Embedding模型
 - **BM25检索**: 基于关键词匹配，使用jieba分词
 - **重排优化**: 使用bge-reranker提升检索准确性
 - **质量检测**: 自动评估检索结果相关性
 
-### 3. 法条溯源
+### 4. 法条溯源
 - 回答中的法条引用可点击
 - 弹出模态框展示法条原文
 - 支持下载原文件或打开文件所在位置
 
-### 4. 文件管理
+### 5. 文件管理
 - **分类筛选**: 法律法规 / 案例文书 分类展示
 - **法律法规筛选**: 按法律名称、法条编号筛选
 - **案例文书筛选**: 按案件类型、案号、涉及法律筛选
@@ -193,6 +209,26 @@ npm run dev
 
 ## 使用说明
 
+### 用户登录
+
+首次访问系统会显示登录界面：
+- 默认管理员账户：**admin**
+- 默认密码：**123456**
+
+登录后可以：
+- 查看自己的历史会话
+- 继续之前的对话
+- 创建新的会话
+
+### 历史会话
+
+智能助手页面左侧为历史会话侧边栏：
+- **会话命名**：按时间自动命名（今天 HH:MM / 昨天 HH:MM / MM-DD HH:MM）
+- **切换会话**：点击历史会话可继续之前的对话
+- **新建会话**：点击顶部 + 按钮创建新会话
+- **删除会话**：鼠标悬停会话项，点击右侧 × 按钮删除
+- **消息数量**：每个会话显示包含的消息条数
+
 ### 智能问答
 
 支持多种类型的法律问题：
@@ -220,10 +256,65 @@ npm run dev
 
 ## API接口
 
+### 用户认证
+
+**登录**
+```
+POST /api/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "123456"
+}
+
+# 返回
+{
+  "success": true,
+  "token": "xxx",
+  "user_id": 1,
+  "username": "admin",
+  "expires_at": "2026-03-30T12:00:00"
+}
+```
+
+**登出**
+```
+POST /api/auth/logout
+Authorization: Bearer {token}
+```
+
+**验证Token**
+```
+GET /api/auth/verify
+Authorization: Bearer {token}
+```
+
+### 会话管理
+
+**获取用户会话列表**
+```
+GET /api/conversation/sessions
+Authorization: Bearer {token}
+```
+
+**获取会话消息**
+```
+GET /api/conversation/messages?session_id=xxx
+Authorization: Bearer {token}
+```
+
+**删除会话**
+```
+DELETE /api/conversation/session?session_id=xxx
+Authorization: Bearer {token}
+```
+
 ### 用户提问（流式）
 ```
 POST /api/legal/query/stream
 Content-Type: application/json
+Authorization: Bearer {token}
 
 {
   "query": "什么是正当防卫？",
@@ -237,6 +328,7 @@ Content-Type: application/json
 ```
 POST /api/legal/query
 Content-Type: application/json
+Authorization: Bearer {token}
 
 {
   "query": "什么是正当防卫？",
@@ -286,9 +378,12 @@ Content-Type: application/json
 1. **模型预加载**: 启动时预加载嵌入模型和重排模型，减少首次查询等待时间
 2. **混合检索**: 向量检索 + BM25关键词检索，提升检索准确性
 3. **检索质量检测**: 自动评估检索结果相关性，质量不佳时使用基座大模型回答
-4. **法条匹配**: 支持多种格式的法条引用（"第26条"、"第 26 条"等）
-5. **旧版DOC兼容**: 支持扩展名为.docx但实际为.doc格式的文件
-6. **分类筛选**: 法律法规和案例文书分开管理，提供更精准的筛选体验
+4. **持久化对话记忆**: 使用SQLite存储对话历史，服务重启后对话不丢失
+5. **法条匹配**: 支持多种格式的法条引用（"第26条"、"第 26 条"等）
+6. **旧版DOC兼容**: 支持扩展名为.docx但实际为.doc格式的文件
+7. **分类筛选**: 法律法规和案例文书分开管理，提供更精准的筛选体验
+8. **用户认证**: JWT Token认证，支持用户登录和会话隔离
+9. **会话管理**: 历史会话侧边栏，支持增删改查操作
 
 ## 数据流程
 
