@@ -12,7 +12,10 @@ from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader, Te
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
 
-from config import settings
+try:
+    from ..config import settings
+except ImportError:
+    from config import settings
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

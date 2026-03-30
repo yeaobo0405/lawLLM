@@ -18,8 +18,15 @@ from pymilvus import (
 )
 from rank_bm25 import BM25Okapi
 
-from config import settings
-from modules.document_processor import EmbeddingGenerator
+try:
+    from ..config import settings
+except ImportError:
+    from config import settings
+
+try:
+    from .document_processor import EmbeddingGenerator
+except ImportError:
+    from modules.document_processor import EmbeddingGenerator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

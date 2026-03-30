@@ -11,8 +11,15 @@ from langchain_openai import ChatOpenAI
 from langchain.schema import HumanMessage, AIMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 
-from config import settings
-from modules.rag_retriever import HybridRetriever, SearchResult
+try:
+    from ..config import settings
+except ImportError:
+    from config import settings
+
+try:
+    from .rag_retriever import HybridRetriever, SearchResult
+except ImportError:
+    from modules.rag_retriever import HybridRetriever, SearchResult
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

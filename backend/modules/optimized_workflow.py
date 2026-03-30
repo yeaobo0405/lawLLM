@@ -1,6 +1,6 @@
 """
 优化的法律咨询工作流
-支持流式输出，简化流程
+支持流式输出，简化流程，增强上下文处理
 """
 import logging
 from typing import Dict, Any, List, Optional, Generator
@@ -9,9 +9,25 @@ from dataclasses import dataclass
 from langchain_openai import ChatOpenAI
 from langchain.schema import HumanMessage, AIMessage, SystemMessage
 
-from config import settings
-from modules.rag_retriever import HybridRetriever, SearchResult
-from modules.memory_store import ConversationMemory
+try:
+    from ..config import settings
+except ImportError:
+    from config import settings
+
+try:
+    from .rag_retriever import HybridRetriever, SearchResult
+except ImportError:
+    from modules.rag_retriever import HybridRetriever, SearchResult
+
+try:
+    from .memory_store import ConversationMemory
+except ImportError:
+    from modules.memory_store import ConversationMemory
+
+try:
+    from .context_manager import EnhancedMemoryManager, ContextConfig
+except ImportError:
+    from modules.context_manager import EnhancedMemoryManager, ContextConfig
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -45,12 +61,13 @@ class OptimizedLegalWorkflow:
     # 检索结果相关度阈值
     RELEVANCE_THRESHOLD = 0.3
     
-    def __init__(self, hybrid_retriever: HybridRetriever):
+    def __init__(self, hybrid_retriever: HybridRetriever, context_config: ContextConfig = None):
         """
         初始化工作流
         
         Args:
             hybrid_retriever: 混合检索器
+            context_config: 上下文配置
         """
         self.hybrid_retriever = hybrid_retriever
         
@@ -63,6 +80,19 @@ class OptimizedLegalWorkflow:
         )
         
         self.memory_store = ConversationMemory()
+        
+        self.context_config = context_config or ContextConfig(
+            max_history_messages=10,
+            max_context_tokens=2000,
+            summary_threshold=6,
+            recent_messages_keep=2
+        )
+        
+        self.enhanced_memory = EnhancedMemoryManager(
+            self.memory_store, 
+            self.llm, 
+            self.context_config
+        )
     
     def _check_intent_fast(self, query: str) -> IntentResult:
         """
@@ -189,7 +219,14 @@ class OptimizedLegalWorkflow:
         Returns:
             工作流执行结果
         """
-        intent_result = self._check_intent_fast(query)
+        rewritten_query, history, summary = self.enhanced_memory.get_processed_context(
+            session_id, user_id, query
+        )
+        
+        if rewritten_query != query:
+            logger.info(f"查询改写: '{query}' -> '{rewritten_query}'")
+        
+        intent_result = self._check_intent_fast(rewritten_query)
         
         if not intent_result.is_valid:
             return {
@@ -199,7 +236,7 @@ class OptimizedLegalWorkflow:
                 "search_results": []
             }
         
-        search_results = self.hybrid_retriever.hybrid_search(query)
+        search_results = self.hybrid_retriever.hybrid_search(rewritten_query)
         
         is_quality_ok, quality_reason = self._check_search_quality(search_results)
         
@@ -216,7 +253,9 @@ class OptimizedLegalWorkflow:
 
             messages = [SystemMessage(content=system_prompt_general)]
             
-            history = self.memory_store.get_history(session_id, limit=4, user_id=user_id)
+            if summary:
+                messages.append(SystemMessage(content=f"之前的对话摘要：{summary}"))
+            
             for msg in history:
                 if msg.get("role") == "user":
                     messages.append(HumanMessage(content=msg.get("content", "")))
@@ -249,7 +288,6 @@ class OptimizedLegalWorkflow:
                 }
         
         context = self._build_context(search_results)
-        history = self.memory_store.get_history(session_id, limit=4, user_id=user_id)
         
         system_prompt = """你是一个专业的法律咨询助手。请根据系统检索到的法律条文和案例，回答用户的问题。
 
@@ -260,6 +298,9 @@ class OptimizedLegalWorkflow:
 4. 禁止说"根据您提供的"，直接陈述法律内容即可"""
 
         messages = [SystemMessage(content=system_prompt)]
+        
+        if summary:
+            messages.append(SystemMessage(content=f"之前的对话摘要：{summary}"))
         
         for msg in history:
             if msg.get("role") == "user":
@@ -315,7 +356,14 @@ class OptimizedLegalWorkflow:
         """
         import json
         
-        intent_result = self._check_intent_fast(query)
+        rewritten_query, history, summary = self.enhanced_memory.get_processed_context(
+            session_id, user_id, query
+        )
+        
+        if rewritten_query != query:
+            logger.info(f"查询改写: '{query}' -> '{rewritten_query}'")
+        
+        intent_result = self._check_intent_fast(rewritten_query)
         
         if not intent_result.is_valid:
             yield f"data: {json.dumps({'type': 'answer', 'content': '抱歉，我无法回答这个问题。检测到您的请求可能涉及不合规内容。'}, ensure_ascii=False)}\n\n"
@@ -324,7 +372,7 @@ class OptimizedLegalWorkflow:
         
         yield f"data: {json.dumps({'type': 'status', 'content': '正在检索相关法律条文...'}, ensure_ascii=False)}\n\n"
         
-        search_results = self.hybrid_retriever.hybrid_search(query)
+        search_results = self.hybrid_retriever.hybrid_search(rewritten_query)
         
         is_quality_ok, quality_reason = self._check_search_quality(search_results)
         
@@ -341,7 +389,9 @@ class OptimizedLegalWorkflow:
 
             messages = [SystemMessage(content=system_prompt_general)]
             
-            history = self.memory_store.get_history(session_id, limit=4, user_id=user_id)
+            if summary:
+                messages.append(SystemMessage(content=f"之前的对话摘要：{summary}"))
+            
             for msg in history:
                 if msg.get("role") == "user":
                     messages.append(HumanMessage(content=msg.get("content", "")))
@@ -373,7 +423,6 @@ class OptimizedLegalWorkflow:
         yield f"data: {json.dumps({'type': 'status', 'content': '正在生成回答...'}, ensure_ascii=False)}\n\n"
         
         context = self._build_context(search_results)
-        history = self.memory_store.get_history(session_id, limit=4, user_id=user_id)
         
         system_prompt = """你是一个专业的法律咨询助手。请根据系统检索到的法律条文和案例，回答用户的问题。
 
@@ -384,6 +433,9 @@ class OptimizedLegalWorkflow:
 4. 禁止说"根据您提供的"，直接陈述法律内容即可"""
 
         messages = [SystemMessage(content=system_prompt)]
+        
+        if summary:
+            messages.append(SystemMessage(content=f"之前的对话摘要：{summary}"))
         
         for msg in history:
             if msg.get("role") == "user":
@@ -429,5 +481,5 @@ class OptimizedLegalWorkflow:
             session_id: 会话ID
             user_id: 用户ID
         """
-        self.memory_store.clear_history(session_id, user_id)
+        self.enhanced_memory.clear_memory(session_id, user_id)
         logger.info(f"已清除会话记忆: {session_id}")
