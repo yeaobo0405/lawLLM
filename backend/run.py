@@ -22,7 +22,10 @@ def check_environment():
         'langgraph',
         'pymilvus',
         'fastapi',
-        'uvicorn'
+        'uvicorn',
+        'cn2an',
+        'tiktoken',
+        'tenacity'
     ]
     
     missing_packages = []

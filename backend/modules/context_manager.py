@@ -275,7 +275,11 @@ class ContextManager:
                 layer2_max_tokens=150,
                 min_messages_for_summary=self.config.summary_threshold
             )
-            self.hierarchical_manager = HierarchicalContextManager(self.llm, hierarchical_config)
+            self.hierarchical_manager = HierarchicalContextManager(
+                self.llm, 
+                hierarchical_config,
+                memory_store=None # 会在 process_query 中动态设置或初始化时传入
+            )
         else:
             self.hierarchical_manager = None
         
@@ -301,9 +305,18 @@ class ContextManager:
         rewritten_query = self.query_rewriter.rewrite(query, conversation_history)
         
         if self.use_hierarchical and self.hierarchical_manager:
-            layer0, layer1_summary, layer2_summary = self.hierarchical_manager.process(
-                session_id, conversation_history
+            # 确保 hierarchical_manager 拥有 memory_store 的引用
+            if not self.hierarchical_manager.memory_store and hasattr(self, 'memory_store'):
+                self.hierarchical_manager.memory_store = self.memory_store
+
+            user_id = getattr(self, 'user_id', 0) # 如果没有传 user_id，尝试从 self 中获取
+            
+            layer0, layer1, layer2 = self.hierarchical_manager.process(
+                session_id, user_id, conversation_history
             )
+            
+            layer1_summary = layer1.summary
+            layer2_summary = layer2.summary
             
             combined_summary = ""
             if layer2_summary:
@@ -400,6 +413,7 @@ class EnhancedMemoryManager:
     def __init__(self, memory_store, llm: ChatOpenAI = None, config: ContextConfig = None, use_hierarchical: bool = True):
         self.memory_store = memory_store
         self.context_manager = ContextManager(llm, config, use_hierarchical)
+        self.context_manager.memory_store = memory_store
     
     def get_processed_context(
         self,
@@ -423,6 +437,8 @@ class EnhancedMemoryManager:
             limit=self.context_manager.config.max_history_messages + 10,
             user_id=user_id
         )
+        
+        self.context_manager.user_id = user_id # 动态设置当前上下文的用户ID
         
         return self.context_manager.process_query(current_query, history, session_id)
     

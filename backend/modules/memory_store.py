@@ -57,6 +57,18 @@ class ConversationMemory:
             ON conversations(created_at)
         ''')
         
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS summaries (
+                session_id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL DEFAULT 0,
+                layer1_summary TEXT,
+                layer2_summary TEXT,
+                layer1_msg_count INTEGER DEFAULT 0,
+                layer2_msg_count INTEGER DEFAULT 0,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
         conn.commit()
         conn.close()
         logger.info(f"对话记忆数据库初始化完成: {self.db_path}")
@@ -299,3 +311,70 @@ class ConversationMemory:
         except Exception as e:
             logger.error(f"删除会话失败: {e}")
             return False
+    def save_summary(
+        self, 
+        session_id: str, 
+        user_id: int, 
+        layer1_summary: str, 
+        layer2_summary: str,
+        layer1_msg_count: int,
+        layer2_msg_count: int
+    ):
+        """保存会话摘要"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO summaries (
+                session_id, user_id, 
+                layer1_summary, layer2_summary, 
+                layer1_msg_count, layer2_msg_count, 
+                last_updated
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                layer1_summary=excluded.layer1_summary,
+                layer2_summary=excluded.layer2_summary,
+                layer1_msg_count=excluded.layer1_msg_count,
+                layer2_msg_count=excluded.layer2_msg_count,
+                last_updated=excluded.last_updated
+        ''', (
+            session_id, user_id, 
+            layer1_summary, layer2_summary, 
+            layer1_msg_count, layer2_msg_count, 
+            datetime.now().isoformat()
+        ))
+        
+        conn.commit()
+        conn.close()
+    
+    def get_summary(self, session_id: str, user_id: int) -> Optional[Dict]:
+        """获取会话摘要"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT layer1_summary, layer2_summary, layer1_msg_count, layer2_msg_count
+            FROM summaries
+            WHERE session_id = ? AND user_id = ?
+        ''', (session_id, user_id))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return {
+                "layer1_summary": row[0],
+                "layer2_summary": row[1],
+                "layer1_msg_count": row[2],
+                "layer2_msg_count": row[3]
+            }
+        return None
+
+    def delete_summary(self, session_id: str, user_id: int):
+        """删除会话摘要"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM summaries WHERE session_id = ? AND user_id = ?', (session_id, user_id))
+        conn.commit()
+        conn.close()

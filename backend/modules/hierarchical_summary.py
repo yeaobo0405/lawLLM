@@ -9,6 +9,8 @@ from datetime import datetime
 
 from langchain_openai import ChatOpenAI
 from langchain.schema import HumanMessage, AIMessage, SystemMessage
+import tiktoken
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 try:
     from ..config import settings
@@ -37,7 +39,13 @@ class SummaryLayer:
         return not self.summary
     
     def token_count(self) -> int:
-        return int(len(self.summary) / 1.5) if self.summary else 0
+        if not self.summary:
+            return 0
+        try:
+            encoding = tiktoken.get_encoding("cl100k_base")
+            return len(encoding.encode(self.summary))
+        except Exception:
+            return int(len(self.summary) / 1.5)
 
 
 @dataclass
@@ -77,8 +85,10 @@ class RollingSummarizer:
     def update(
         self,
         session_id: str,
+        user_id: int,
         new_messages: List[Dict[str, str]],
-        all_messages: List[Dict[str, str]]
+        all_messages: List[Dict[str, str]],
+        memory_store = None
     ) -> Tuple[SummaryLayer, SummaryLayer, List[Dict[str, str]]]:
         """
         增量更新分层摘要
@@ -120,6 +130,14 @@ class RollingSummarizer:
             layers[1] = new_layer1
         
         self.session_processed_count[session_id] = len(all_messages)
+        
+        # 如果提供了 memory_store，则持久化摘要
+        if memory_store:
+            memory_store.save_summary(
+                session_id, user_id,
+                layers[1].summary, layers[2].summary,
+                layers[1].message_count, layers[2].message_count
+            )
         
         return layers[1], layers[2], layer0_messages
     
@@ -211,7 +229,15 @@ class RollingSummarizer:
         user_message = f"对话内容：\n{history_text}\n\n请生成摘要："
 
         try:
-            response = self.llm.invoke([
+            @retry(
+                stop=stop_after_attempt(3),
+                wait=wait_exponential(multiplier=1, min=4, max=10),
+                retry=retry_if_exception_type(Exception)
+            )
+            def invoke_llm(msgs):
+                return self.llm.invoke(msgs)
+            
+            response = invoke_llm([
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_message)
             ])
@@ -251,7 +277,15 @@ class RollingSummarizer:
 请生成合并后的摘要："""
 
         try:
-            response = self.llm.invoke([
+            @retry(
+                stop=stop_after_attempt(3),
+                wait=wait_exponential(multiplier=1, min=4, max=10),
+                retry=retry_if_exception_type(Exception)
+            )
+            def invoke_llm(msgs):
+                return self.llm.invoke(msgs)
+            
+            response = invoke_llm([
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_message)
             ])
@@ -315,8 +349,9 @@ class HierarchicalContextManager:
     整合滑动窗口和滚动分层摘要
     """
     
-    def __init__(self, llm: ChatOpenAI = None, config: HierarchicalSummaryConfig = None):
+    def __init__(self, llm: ChatOpenAI = None, config: HierarchicalSummaryConfig = None, memory_store = None):
         self.config = config or HierarchicalSummaryConfig()
+        self.memory_store = memory_store
         
         if llm is None:
             self.llm = ChatOpenAI(
@@ -335,18 +370,32 @@ class HierarchicalContextManager:
     def process(
         self,
         session_id: str,
+        user_id: int,
         conversation_history: List[Dict[str, str]]
-    ) -> Tuple[List[Dict[str, str]], str, str]:
+    ) -> Tuple[List[Dict[str, str]], SummaryLayer, SummaryLayer]:
         """
         处理对话历史，返回分层压缩后的上下文
         
         Args:
             session_id: 会话ID
+            user_id: 用户ID
             conversation_history: 完整对话历史
             
         Returns:
             (Layer0完整消息, Layer1摘要, Layer2摘要)
         """
+        layers = self.rolling_summarizer._get_session_layers(session_id)
+        
+        # 尝试从数据库加载摘要（如果内存中没有）
+        if self.memory_store and layers[1].is_empty() and layers[2].is_empty():
+            db_summary = self.memory_store.get_summary(session_id, user_id)
+            if db_summary:
+                layers[1].summary = db_summary["layer1_summary"]
+                layers[1].message_count = db_summary["layer1_msg_count"]
+                layers[2].summary = db_summary["layer2_summary"]
+                layers[2].message_count = db_summary["layer2_msg_count"]
+                logger.info(f"从数据库加载了会话 {session_id} 的分层摘要")
+
         last_count = self.session_last_count.get(session_id, 0)
         current_count = len(conversation_history)
         
@@ -354,7 +403,7 @@ class HierarchicalContextManager:
         
         if new_messages:
             layer1, layer2, layer0 = self.rolling_summarizer.update(
-                session_id, new_messages, conversation_history
+                session_id, user_id, new_messages, conversation_history, self.memory_store
             )
         else:
             layer1, layer2, layer0 = self.rolling_summarizer.get_context(session_id)
@@ -362,7 +411,7 @@ class HierarchicalContextManager:
         
         self.session_last_count[session_id] = current_count
         
-        return layer0, layer1.summary, layer2.summary
+        return layer0, layer1, layer2
     
     def build_messages(
         self,

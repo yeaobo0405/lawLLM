@@ -5,6 +5,7 @@
 import logging
 from typing import Dict, Any, List, Optional, Generator
 from dataclasses import dataclass
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from langchain_openai import ChatOpenAI
 from langchain.schema import HumanMessage, AIMessage, SystemMessage
@@ -265,7 +266,15 @@ class OptimizedLegalWorkflow:
             messages.append(HumanMessage(content=f"用户问题：{query}"))
             
             try:
-                response = self.llm.invoke(messages)
+                @retry(
+                    stop=stop_after_attempt(3),
+                    wait=wait_exponential(multiplier=1, min=4, max=10),
+                    retry=retry_if_exception_type(Exception)
+                )
+                def invoke_llm(msgs):
+                    return self.llm.invoke(msgs)
+                
+                response = invoke_llm(messages)
                 answer = response.content
                 
                 self.memory_store.add_message(session_id, "user", query, user_id)
@@ -318,7 +327,15 @@ class OptimizedLegalWorkflow:
         messages.append(HumanMessage(content=user_message))
         
         try:
-            response = self.llm.invoke(messages)
+            @retry(
+                stop=stop_after_attempt(3),
+                wait=wait_exponential(multiplier=1, min=4, max=10),
+                retry=retry_if_exception_type(Exception)
+            )
+            def invoke_llm(msgs):
+                return self.llm.invoke(msgs)
+            
+            response = invoke_llm(messages)
             answer = response.content
             
             answer = self._add_source_buttons(answer, search_results)

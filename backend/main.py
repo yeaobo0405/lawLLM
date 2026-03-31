@@ -256,7 +256,18 @@ async def logout(authorization: Optional[str] = Header(None)):
         token = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else authorization
         auth_manager.logout(token)
     
-    return {"success": True, "message": "已登出"}
+    return {"success": True, "message": "登出成功"}
+
+@app.get("/api/auth/check", tags=["认证"])
+async def check_auth(current_user: Dict = Depends(get_current_user)):
+    """
+    检查登录状态接口
+    """
+    return {
+        "success": True,
+        "user_id": current_user["user_id"],
+        "username": current_user["username"]
+    }
 
 
 @app.get("/api/auth/me", tags=["认证"])
@@ -594,19 +605,34 @@ async def get_file_content(file_path: str = Query(..., description="文件路径
     ext = os.path.splitext(file_path)[1].lower()
     
     try:
-        content = ""
+        import asyncio
         
-        if ext == '.txt':
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-        elif ext == '.docx':
-            import docx2txt
-            import zipfile
-            try:
-                # 先尝试作为标准docx读取
-                content = docx2txt.process(file_path)
-            except zipfile.BadZipFile:
-                # 如果不是zip格式，可能是旧版doc格式但扩展名为docx
+        def extract_content():
+            content = ""
+            if ext == '.txt':
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+            elif ext == '.docx':
+                import docx2txt
+                import zipfile
+                try:
+                    content = docx2txt.process(file_path)
+                except zipfile.BadZipFile:
+                    try:
+                        import win32com.client
+                        word = win32com.client.Dispatch("Word.Application")
+                        word.Visible = False
+                        doc = word.Documents.Open(os.path.abspath(file_path))
+                        content = doc.Content.Text
+                        doc.Close(False)
+                        word.Quit()
+                    except Exception as e:
+                        raise Exception(f"无法使用Word加载损坏的DOCX: {str(e)}")
+            elif ext == '.pdf':
+                from pypdf import PdfReader
+                reader = PdfReader(file_path)
+                content = "\n\n".join([page.extract_text() or "" for page in reader.pages])
+            elif ext == '.doc':
                 try:
                     import win32com.client
                     word = win32com.client.Dispatch("Word.Application")
@@ -616,24 +642,12 @@ async def get_file_content(file_path: str = Query(..., description="文件路径
                     doc.Close(False)
                     word.Quit()
                 except Exception as e:
-                    raise HTTPException(status_code=500, detail=f"无法读取文件: {str(e)}")
-        elif ext == '.pdf':
-            from pypdf import PdfReader
-            reader = PdfReader(file_path)
-            content = "\n\n".join([page.extract_text() or "" for page in reader.pages])
-        elif ext == '.doc':
-            try:
-                import win32com.client
-                word = win32com.client.Dispatch("Word.Application")
-                word.Visible = False
-                doc = word.Documents.Open(os.path.abspath(file_path))
-                content = doc.Content.Text
-                doc.Close(False)
-                word.Quit()
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=f"无法读取DOC文件: {str(e)}")
-        else:
-            raise HTTPException(status_code=415, detail="不支持的文件类型")
+                    raise Exception(f"无法读取旧版DOC文件: {str(e)}")
+            else:
+                raise ValueError("不支持的文件格式")
+            return content
+
+        content = await asyncio.to_thread(extract_content)
         
         return {
             "success": True,

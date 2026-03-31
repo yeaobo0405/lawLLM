@@ -1,7 +1,12 @@
 <template>
   <div class="app-container">
+    <div v-if="!isAuthChecked" class="app-loading">
+      <div class="loading-spinner"></div>
+      <p>身份校验中...</p>
+    </div>
+    
     <LoginView 
-      v-if="!isLoggedIn" 
+      v-else-if="!isLoggedIn" 
       @login-success="handleLoginSuccess"
     />
     
@@ -136,6 +141,7 @@ export default {
   },
   setup() {
     const isLoggedIn = ref(false)
+    const isAuthChecked = ref(false)
     const token = ref('')
     const currentUser = ref('')
     const currentUserId = ref(0)
@@ -161,20 +167,36 @@ export default {
       'Authorization': `Bearer ${token.value}`
     })
 
-    onMounted(() => {
+    onMounted(async () => {
       const savedToken = localStorage.getItem('token')
       const savedUser = localStorage.getItem('username')
       const savedUserId = localStorage.getItem('user_id')
       
       if (savedToken && savedUser) {
         token.value = savedToken
-        currentUser.value = savedUser
-        currentUserId.value = parseInt(savedUserId) || 0
-        isLoggedIn.value = true
-        sessionId.value = generateSessionId()
-        loadFiles()
-        loadUserSessions()
+        try {
+          // 验证 Token 有效性
+          const response = await axios.get('/api/auth/check', {
+            headers: authHeaders()
+          })
+          
+          if (response.data.success) {
+            currentUser.value = savedUser
+            currentUserId.value = parseInt(savedUserId) || 0
+            isLoggedIn.value = true
+            sessionId.value = generateSessionId()
+            loadFiles()
+            loadUserSessions()
+          } else {
+            handleLogout()
+          }
+        } catch (error) {
+          console.error('身份验证失败:', error)
+          handleLogout()
+        }
       }
+      
+      isAuthChecked.value = true
     })
 
     const handleLoginSuccess = (data) => {
@@ -486,6 +508,7 @@ export default {
 
     return {
       isLoggedIn,
+      isAuthChecked,
       currentUser,
       activeTab,
       messages,
@@ -532,6 +555,30 @@ body {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+}
+
+.app-loading {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  background: #f7fafc;
+}
+
+.loading-spinner {
+  width: 50px;
+  height: 50px;
+  border: 4px solid #e2e8f0;
+  border-top: 4px solid #2c5282;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 15px;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 }
 
 .app-header {

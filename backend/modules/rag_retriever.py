@@ -2,6 +2,7 @@
 RAG检索模块
 使用Milvus向量数据库、混合查询（向量+BM25）、rerank重排实现
 """
+import os
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
@@ -126,8 +127,8 @@ class MilvusManager:
             
             index_params = {
                 "metric_type": "COSINE",
-                "index_type": "IVF_FLAT",
-                "params": {"nlist": 128}
+                "index_type": "HNSW",
+                "params": {"M": 16, "efConstruction": 40}
             }
             self.collection.create_index(field_name="embedding", index_params=index_params)
             
@@ -346,6 +347,10 @@ class BM25Retriever:
         self.documents = []
         self.tokenized_corpus = []
         
+        if os.path.exists(settings.LEGAL_DICT_PATH):
+            logger.info(f"正在加载法律词典: {settings.LEGAL_DICT_PATH}")
+            jieba.load_userdict(settings.LEGAL_DICT_PATH)
+        
     def build_index(self, documents: List[Dict[str, Any]]):
         """
         构建BM25索引
@@ -552,43 +557,44 @@ class HybridRetriever:
     def _merge_results(
         self, 
         vector_results: List[Dict[str, Any]], 
-        bm25_results: List[Dict[str, Any]]
+        bm25_results: List[Dict[str, Any]],
+        k: int = 60
     ) -> List[Dict[str, Any]]:
         """
-        合并向量检索和BM25检索结果，去除重复
+        使用 RRF (Reciprocal Rank Fusion) 算法合并向量检索和 BM25 检索结果
         
         Args:
             vector_results: 向量检索结果
             bm25_results: BM25检索结果
+            k: RRF 常数，默认为 60
             
         Returns:
-            合并后的结果列表
+            合并并按 RRF 分数排序后的结果列表
         """
-        merged = {}
+        rrf_scores = {}
+        content_map = {}
         
-        for result in vector_results:
+        for rank, result in enumerate(vector_results):
             content = result.get("content", "")
-            if content not in merged:
-                merged[content] = result
-                merged[content]["vector_score"] = result.get("score", 0)
-                merged[content]["bm25_score"] = 0
+            if content not in rrf_scores:
+                rrf_scores[content] = 0
+                content_map[content] = result
+            rrf_scores[content] += 1.0 / (k + rank + 1)
         
-        for result in bm25_results:
+        for rank, result in enumerate(bm25_results):
             content = result.get("content", "")
-            if content in merged:
-                merged[content]["bm25_score"] = result.get("score", 0)
-            else:
-                merged[content] = result
-                merged[content]["vector_score"] = 0
-                merged[content]["bm25_score"] = result.get("score", 0)
+            if content not in rrf_scores:
+                rrf_scores[content] = 0
+                content_map[content] = result
+            rrf_scores[content] += 1.0 / (k + rank + 1)
         
-        for content in merged:
-            merged[content]["combined_score"] = (
-                merged[content]["vector_score"] * 0.6 + 
-                merged[content]["bm25_score"] * 0.4
-            )
+        final_results = []
+        for content, score in rrf_scores.items():
+            result = content_map[content].copy()
+            result["combined_score"] = score
+            final_results.append(result)
         
-        return sorted(merged.values(), key=lambda x: x["combined_score"], reverse=True)
+        return sorted(final_results, key=lambda x: x["combined_score"], reverse=True)
 
 
 if __name__ == "__main__":

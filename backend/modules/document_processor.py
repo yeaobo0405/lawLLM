@@ -5,6 +5,7 @@
 import os
 import re
 import logging
+import cn2an
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 
@@ -263,26 +264,12 @@ class DocumentProcessor:
     
     def _chinese_to_number(self, chinese: str) -> str:
         """
-        中文数字转阿拉伯数字
-        
-        Args:
-            chinese: 中文数字字符串
-            
-        Returns:
-            阿拉伯数字字符串
+        使用cn2an将中文数字转换为阿拉伯数字
         """
-        mapping = {
-            '零': '0', '一': '1', '二': '2', '三': '3', '四': '4',
-            '五': '5', '六': '6', '七': '7', '八': '8', '九': '9',
-            '十': '10', '百': '00'
-        }
-        result = ""
-        for char in chinese:
-            if char in mapping:
-                result += mapping[char]
-            else:
-                result += char
-        return result if result else chinese
+        try:
+            return str(cn2an.cn2an(chinese, "normal"))
+        except Exception:
+            return chinese
     
     def extract_law_metadata(self, text: str, file_path: str) -> LegalMetadata:
         """

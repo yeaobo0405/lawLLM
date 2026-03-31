@@ -18,5 +18,9 @@ class Settings:
     TOP_K_VECTOR: int = 10
     TOP_K_BM25: int = 10
     TOP_K_RERANK: int = 5
+    
+    KNOWLEDGE_BASE_PATH: str = "./knowledge_base"
+    DATABASE_PATH: str = "./backend/data/conversation_memory.db"
+    LEGAL_DICT_PATH: str = "./backend/data/legal_dict.txt"
 
 settings = Settings()
