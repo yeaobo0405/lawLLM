@@ -540,6 +540,7 @@ class EmbeddingGenerator:
         """
         self.model_path = model_path or settings.EMBEDDING_MODEL_PATH
         self.model = None
+        self.is_ready = False
         
     def load_model(self):
         """
@@ -550,6 +551,7 @@ class EmbeddingGenerator:
             
             logger.info(f"正在加载嵌入模型: {self.model_path}")
             self.model = SentenceTransformer(self.model_path)
+            self.is_ready = True
             logger.info("嵌入模型加载完成")
             
         except Exception as e:

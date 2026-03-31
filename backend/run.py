@@ -64,23 +64,6 @@ def check_milvus_connection():
         logger.warning(f"Milvus连接失败: {str(e)}")
         logger.warning("请确保Milvus服务已启动")
         return False
-
-
-def create_directories():
-    """
-    创建必要的目录
-    """
-    directories = [
-        "knowledge_base/laws",
-        "knowledge_base/cases",
-        "logs"
-    ]
-    
-    for directory in directories:
-        os.makedirs(directory, exist_ok=True)
-        logger.info(f"创建目录: {directory}")
-
-
 def main():
     """
     主函数
@@ -91,8 +74,6 @@ def main():
     
     if not check_environment():
         sys.exit(1)
-    
-    create_directories()
     
     check_milvus_connection()
     

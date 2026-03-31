@@ -346,10 +346,22 @@ class BM25Retriever:
         self.bm25 = None
         self.documents = []
         self.tokenized_corpus = []
-        
+        self.is_initialized = False
+
+    def initialize(self):
+        """
+        延迟初始化：加载法律词典并预热 jieba
+        """
+        if self.is_initialized:
+            return
+            
         if os.path.exists(settings.LEGAL_DICT_PATH):
-            logger.info(f"正在加载法律词典: {settings.LEGAL_DICT_PATH}")
+            logger.info(f"正在后台异步加载法律词典: {settings.LEGAL_DICT_PATH}")
             jieba.load_userdict(settings.LEGAL_DICT_PATH)
+            # 显式初始化 jieba 引擎，防止第一个搜索请求阻塞
+            jieba.initialize()
+            
+        self.is_initialized = True
         
     def build_index(self, documents: List[Dict[str, Any]]):
         """
@@ -358,6 +370,9 @@ class BM25Retriever:
         Args:
             documents: 文档列表
         """
+        # 确保 jieba 已初始化
+        self.initialize()
+        
         self.documents = documents
         self.tokenized_corpus = []
         
@@ -385,6 +400,9 @@ class BM25Retriever:
             logger.warning("BM25索引未构建")
             return []
         
+        # 确保已初始化（词典加载）
+        self.initialize()
+        
         try:
             query_tokens = list(jieba.cut(query))
             scores = self.bm25.get_scores(query_tokens)
@@ -402,6 +420,56 @@ class BM25Retriever:
         except Exception as e:
             logger.error(f"BM25检索失败: {str(e)}")
             return []
+            
+    def save_to_cache(self, file_path: str):
+        """
+        保存BM25索引到缓存文件
+        
+        Args:
+            file_path: 缓存文件路径
+        """
+        try:
+            import pickle
+            # 确保目录存在
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            with open(file_path, 'wb') as f:
+                pickle.dump({
+                    'documents': self.documents,
+                    'tokenized_corpus': self.tokenized_corpus,
+                    'bm25': self.bm25
+                }, f)
+            logger.info(f"BM25索引已缓存至: {file_path}")
+        except Exception as e:
+            logger.error(f"保存BM25缓存失败: {str(e)}")
+
+    def load_from_cache(self, file_path: str) -> bool:
+        """
+        从缓存文件加载BM25索引
+        
+        Args:
+            file_path: 缓存文件路径
+            
+        Returns:
+            是否加载成功
+        """
+        if not os.path.exists(file_path):
+            return False
+            
+        try:
+            import pickle
+            with open(file_path, 'rb') as f:
+                data = pickle.load(f)
+                self.documents = data.get('documents', [])
+                self.tokenized_corpus = data.get('tokenized_corpus', [])
+                self.bm25 = data.get('bm25')
+            
+            if self.bm25 and self.documents:
+                logger.info(f"成功从缓存加载BM25索引，共 {len(self.documents)} 条文档")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"从缓存加载BM25失败: {str(e)}")
+            return False
 
 
 class Reranker:
@@ -419,6 +487,7 @@ class Reranker:
         """
         self.model_path = model_path or settings.RERANK_MODEL_PATH
         self.reranker = None
+        self.is_ready = False
         
     def load_model(self):
         """
@@ -429,6 +498,7 @@ class Reranker:
             
             logger.info(f"正在加载重排模型: {self.model_path}")
             self.reranker = CrossEncoder(self.model_path, max_length=512)
+            self.is_ready = True
             logger.info("重排模型加载完成")
             
         except Exception as e:
@@ -492,16 +562,32 @@ class HybridRetriever:
         self.bm25_retriever = BM25Retriever()
         self.reranker = Reranker()
         self.is_bm25_built = False
+        self.is_ready = False
         
     def build_bm25_index(self):
         """
-        构建BM25索引
+        构建或加载BM25索引
         """
         try:
+            # 1. 优先尝试从缓存加载
+            if hasattr(settings, 'BM25_CACHE_PATH') and self.bm25_retriever.load_from_cache(settings.BM25_CACHE_PATH):
+                self.is_bm25_built = True
+                return
+
+            # 2. 缓存不可用，执行构建流程
+            logger.info("正在从数据库构建BM25索引...")
             all_docs = self.milvus_manager.filter_by_metadata()
             if all_docs:
                 self.bm25_retriever.build_index(all_docs)
                 self.is_bm25_built = True
+                
+                # 3. 成功后保存到缓存
+                if hasattr(settings, 'BM25_CACHE_PATH'):
+                    self.bm25_retriever.save_to_cache(settings.BM25_CACHE_PATH)
+            
+            # 当向量引擎和BM25都准备好时（逻辑上这里主要关注BM25完成后的整体状态）
+            self.is_ready = True
+                    
         except Exception as e:
             logger.error(f"构建BM25索引失败: {str(e)}")
     

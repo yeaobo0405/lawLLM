@@ -22,5 +22,6 @@ class Settings:
     KNOWLEDGE_BASE_PATH: str = "./knowledge_base"
     DATABASE_PATH: str = "./backend/data/conversation_memory.db"
     LEGAL_DICT_PATH: str = "./backend/data/legal_dict.txt"
+    BM25_CACHE_PATH: str = "./backend/data/bm25_index.pkl"
 
 settings = Settings()

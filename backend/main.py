@@ -135,34 +135,50 @@ async def startup_event():
     应用启动时初始化
     """
     global milvus_manager, embedding_generator, hybrid_retriever, workflow, optimized_workflow, auth_manager
-    
     try:
-        logger.info("正在初始化系统组件...")
-        
+        # 1. 唯一保留的基础组件 (登录验证基础)
         auth_manager = AuthManager()
         
-        milvus_manager = MilvusManager()
-        if not milvus_manager.connect():
-            logger.error("Milvus连接失败")
-        else:
-            milvus_manager.create_collection()
+        # 2. 定义全量异步初始化任务
+        async def total_background_initialization():
+            global milvus_manager, embedding_generator, hybrid_retriever, workflow, optimized_workflow
+            try:
+                import asyncio
+                logger.info("系统正在后台启动核心引擎 (Milvus & AI Models)...")
+                
+                # 初始化管理器
+                milvus_manager = MilvusManager()
+                # 即使 Milvus 连接稍慢，也不会阻塞端口开放
+                await asyncio.to_thread(milvus_manager.connect)
+                await asyncio.to_thread(milvus_manager.create_collection)
+                
+                # 初始化对象
+                embedding_generator = EmbeddingGenerator()
+                hybrid_retriever = HybridRetriever(milvus_manager, embedding_generator)
+                
+                # 初始化工作流 (涉及数据库和图编译)
+                workflow = LegalWorkflow(hybrid_retriever)
+                optimized_workflow = OptimizedLegalWorkflow(hybrid_retriever)
+                
+                # 加载权重与词典
+                await asyncio.gather(
+                    asyncio.to_thread(embedding_generator.load_model),
+                    asyncio.to_thread(hybrid_retriever.reranker.load_model),
+                    asyncio.to_thread(hybrid_retriever.bm25_retriever.initialize)
+                )
+                
+                # 最后准备索引
+                hybrid_retriever.build_bm25_index()
+                
+                logger.info(">>> 后台初始化全部完成，系统已进入完全就绪状态 <<<")
+            except Exception as e:
+                logger.error(f"后台初始化任务执行失败: {str(e)}")
+
+        # 核心：立即返回，不进行任何阻塞操作
+        import asyncio
+        asyncio.create_task(total_background_initialization())
         
-        logger.info("正在预加载嵌入模型...")
-        embedding_generator = EmbeddingGenerator()
-        embedding_generator.load_model()
-        
-        hybrid_retriever = HybridRetriever(milvus_manager, embedding_generator)
-        
-        logger.info("正在预加载重排模型...")
-        hybrid_retriever.reranker.load_model()
-        
-        logger.info("正在构建BM25索引...")
-        hybrid_retriever.build_bm25_index()
-        
-        workflow = LegalWorkflow(hybrid_retriever)
-        optimized_workflow = OptimizedLegalWorkflow(hybrid_retriever)
-        
-        logger.info("系统初始化完成，所有模型已预加载")
+        logger.info("🚀 API 服务已瞬间启动 (AI 功能正在后台静默初始化)")
         
     except Exception as e:
         logger.error(f"系统初始化失败: {str(e)}")

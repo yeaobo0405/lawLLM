@@ -220,6 +220,14 @@ class OptimizedLegalWorkflow:
         Returns:
             工作流执行结果
         """
+        if not self.hybrid_retriever.is_ready:
+            return {
+                "success": False,
+                "answer": "⚖️ 系统正在后台预热中（正在加载法律模型与索引），请稍等 5-10 秒后再试。",
+                "disclaimer": self.DISCLAIMER,
+                "search_results": []
+            }
+            
         rewritten_query, history, summary = self.enhanced_memory.get_processed_context(
             session_id, user_id, query
         )
@@ -372,7 +380,11 @@ class OptimizedLegalWorkflow:
             流式输出的文本块
         """
         import json
-        
+        if not self.hybrid_retriever.is_ready:
+            yield f"data: {json.dumps({'type': 'answer', 'content': '⚖️ 系统正在后台预热中（正在加载法律模型与索引），请稍等片刻后再试。'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+            return
+            
         rewritten_query, history, summary = self.enhanced_memory.get_processed_context(
             session_id, user_id, query
         )
