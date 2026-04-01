@@ -15,10 +15,10 @@ from pydantic import BaseModel, Field
 
 from config import settings
 from modules.rag_retriever import MilvusManager, HybridRetriever, EmbeddingGenerator
-from modules.langgraph_workflow import LegalWorkflow
 from modules.optimized_workflow import OptimizedLegalWorkflow
 from modules.document_processor import DocumentProcessor
 from modules.auth import AuthManager
+import pythoncom
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -40,7 +40,6 @@ app.add_middleware(
 milvus_manager: Optional[MilvusManager] = None
 embedding_generator: Optional[EmbeddingGenerator] = None
 hybrid_retriever: Optional[HybridRetriever] = None
-workflow: Optional[LegalWorkflow] = None
 optimized_workflow: Optional[OptimizedLegalWorkflow] = None
 auth_manager: Optional[AuthManager] = None
 
@@ -128,20 +127,26 @@ class SystemStatus(BaseModel):
     embedding_model_loaded: bool = Field(..., description="嵌入模型加载状态")
     total_documents: int = Field(default=0, description="文档总数")
 
+class DraftSaveRequest(BaseModel):
+    """文书保存请求"""
+    id: Optional[str] = Field(None, description="草稿ID（如果不传则新建）")
+    doc_type: str = Field(..., description="文书类型")
+    case_facts: str = Field(..., description="案情描述/参数")
+    content: str = Field(..., description="文书全文(Markdown)")
 
 @app.on_event("startup")
 async def startup_event():
     """
     应用启动时初始化
     """
-    global milvus_manager, embedding_generator, hybrid_retriever, workflow, optimized_workflow, auth_manager
+    global milvus_manager, embedding_generator, hybrid_retriever, optimized_workflow, auth_manager
     try:
         # 1. 唯一保留的基础组件 (登录验证基础)
         auth_manager = AuthManager()
         
         # 2. 定义全量异步初始化任务
         async def total_background_initialization():
-            global milvus_manager, embedding_generator, hybrid_retriever, workflow, optimized_workflow
+            global milvus_manager, embedding_generator, hybrid_retriever, optimized_workflow
             try:
                 import asyncio
                 logger.info("系统正在后台启动核心引擎 (Milvus & AI Models)...")
@@ -157,7 +162,6 @@ async def startup_event():
                 hybrid_retriever = HybridRetriever(milvus_manager, embedding_generator)
                 
                 # 初始化工作流 (涉及数据库和图编译)
-                workflow = LegalWorkflow(hybrid_retriever)
                 optimized_workflow = OptimizedLegalWorkflow(hybrid_retriever)
                 
                 # 加载权重与词典
@@ -443,6 +447,68 @@ async def delete_session(
     return {"success": False, "message": "系统未初始化"}
 
 
+@app.post("/api/draft/save", tags=["文书生成"])
+async def save_draft(
+    request: DraftSaveRequest,
+    user: Dict = Depends(get_current_user)
+):
+    """保存生成的文书"""
+    global optimized_workflow
+    if optimized_workflow:
+        draft_id = request.id or str(uuid.uuid4())
+        optimized_workflow.memory_store.save_draft(
+            draft_id=draft_id,
+            user_id=user["user_id"],
+            doc_type=request.doc_type,
+            case_facts=request.case_facts,
+            content=request.content
+        )
+        return {"success": True, "draft_id": draft_id, "message": "文书已保存"}
+    return {"success": False, "message": "系统尚未就绪"}
+
+
+@app.get("/api/draft/list", tags=["文书生成"])
+async def list_drafts(
+    user: Dict = Depends(get_current_user)
+):
+    """拉取我的文书历史列表"""
+    global optimized_workflow
+    if optimized_workflow:
+        drafts = optimized_workflow.memory_store.get_user_drafts(user["user_id"])
+        return {"success": True, "drafts": drafts}
+    return {"success": False, "drafts": []}
+
+
+@app.get("/api/draft/detail", tags=["文书生成"])
+async def get_draft_detail(
+    draft_id: str = Query(..., description="草稿ID"),
+    user: Dict = Depends(get_current_user)
+):
+    """获取单篇文书详细信息"""
+    global optimized_workflow
+    if optimized_workflow:
+        draft = optimized_workflow.memory_store.get_draft(draft_id, user["user_id"])
+        if draft:
+            return {"success": True, "data": draft}
+        return {"success": False, "message": "文书不存在或是无权访问"}
+    return {"success": False, "message": "系统未就绪"}
+
+
+@app.delete("/api/draft/delete", tags=["文书生成"])
+async def delete_draft(
+    draft_id: str = Query(..., description="草稿ID"),
+    user: Dict = Depends(get_current_user)
+):
+    """删除指定文书"""
+    global optimized_workflow
+    if optimized_workflow:
+        deleted = optimized_workflow.memory_store.delete_draft(draft_id, user["user_id"])
+        if deleted:
+            return {"success": True, "message": "已删除"}
+        return {"success": False, "message": "草稿不存在"}
+    return {"success": False, "message": "系统未就绪"}
+
+
 @app.post("/api/file/filter", response_model=FileListResponse, tags=["文件管理"])
 async def filter_files(request: FileFilterRequest):
     """
@@ -624,16 +690,34 @@ async def get_file_content(file_path: str = Query(..., description="文件路径
         import asyncio
         
         def extract_content():
-            content = ""
-            if ext == '.txt':
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-            elif ext == '.docx':
-                import docx2txt
-                import zipfile
-                try:
-                    content = docx2txt.process(file_path)
-                except zipfile.BadZipFile:
+            # 在子线程中使用 win32com 必须初始化 COM
+            pythoncom.CoInitialize()
+            try:
+                content = ""
+                if ext == '.txt':
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                elif ext == '.docx':
+                    import docx2txt
+                    import zipfile
+                    try:
+                        content = docx2txt.process(file_path)
+                    except zipfile.BadZipFile:
+                        try:
+                            import win32com.client
+                            word = win32com.client.Dispatch("Word.Application")
+                            word.Visible = False
+                            doc = word.Documents.Open(os.path.abspath(file_path))
+                            content = doc.Content.Text
+                            doc.Close(False)
+                            word.Quit()
+                        except Exception as e:
+                            raise Exception(f"无法使用Word加载损坏的DOCX: {str(e)}")
+                elif ext == '.pdf':
+                    from pypdf import PdfReader
+                    reader = PdfReader(file_path)
+                    content = "\n\n".join([page.extract_text() or "" for page in reader.pages])
+                elif ext == '.doc':
                     try:
                         import win32com.client
                         word = win32com.client.Dispatch("Word.Application")
@@ -643,25 +727,12 @@ async def get_file_content(file_path: str = Query(..., description="文件路径
                         doc.Close(False)
                         word.Quit()
                     except Exception as e:
-                        raise Exception(f"无法使用Word加载损坏的DOCX: {str(e)}")
-            elif ext == '.pdf':
-                from pypdf import PdfReader
-                reader = PdfReader(file_path)
-                content = "\n\n".join([page.extract_text() or "" for page in reader.pages])
-            elif ext == '.doc':
-                try:
-                    import win32com.client
-                    word = win32com.client.Dispatch("Word.Application")
-                    word.Visible = False
-                    doc = word.Documents.Open(os.path.abspath(file_path))
-                    content = doc.Content.Text
-                    doc.Close(False)
-                    word.Quit()
-                except Exception as e:
-                    raise Exception(f"无法读取旧版DOC文件: {str(e)}")
-            else:
-                raise ValueError("不支持的文件格式")
-            return content
+                        raise Exception(f"无法读取旧版DOC文件: {str(e)}")
+                else:
+                    raise ValueError("不支持的文件格式")
+                return content
+            finally:
+                pythoncom.CoUninitialize()
 
         content = await asyncio.to_thread(extract_content)
         

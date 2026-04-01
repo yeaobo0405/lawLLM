@@ -8,6 +8,7 @@ import logging
 import cn2an
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
+import torch
 
 from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader, TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -110,7 +111,7 @@ class DocumentProcessor:
                 word = win32com.client.Dispatch("Word.Application")
                 word.Visible = False
                 doc = word.Documents.Open(os_module.path.abspath(file_path))
-                text = doc.Content.Text
+                text = doc.Content.Text.replace('\r', '\n')
                 doc.Close(False)
                 word.Quit()
                 if text.strip():
@@ -136,7 +137,7 @@ class DocumentProcessor:
                 word = win32com.client.Dispatch("Word.Application")
                 word.Visible = False
                 doc = word.Documents.Open(os_module.path.abspath(file_path))
-                text = doc.Content.Text
+                text = doc.Content.Text.replace('\r', '\n')
                 doc.Close(False)
                 word.Quit()
                 if text.strip():
@@ -252,12 +253,23 @@ class DocumentProcessor:
         if not text:
             return ""
         
-        text = re.sub(r'\s+', ' ', text)
+        # 1. 过滤 PDF 特有噪声
+        # 移除 "人民法院案例库" 页眉重复
+        text = re.sub(r'人民法院案例库\s*', '', text)
+        # 移除页码，如 "第 1 页", "第2页", "- 3 -"
+        text = re.sub(r'第\s*\d+\s*页', '', text)
+        text = re.sub(r'-\s*\d+\s*-', '', text)
         
+        # 2. 基础清洗
+        # 处理空白字符
+        text = re.sub(r'\s+', ' ', text)
+        # 移除不可见字符
         text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', text)
         
         text = text.strip()
         
+        # 3. 规范化处理
+        # 转换条文编号 (第十条 -> 第10条)
         text = re.sub(r'第([一二三四五六七八九十百]+)条', lambda m: '第' + self._chinese_to_number(m.group(1)) + '条', text)
         
         return text
@@ -375,7 +387,8 @@ class DocumentProcessor:
             law_name_match = re.search(r'《(.+?)》', full_text)
             law_name = law_name_match.group(1) if law_name_match else os.path.splitext(os.path.basename(file_path))[0]
             
-            article_pattern = r'第([一二三四五六七八九十百零]+)条'
+            # 支持: "第一条", "一、", "1.", "1、" 等格式
+            article_pattern = r'(?:第([一二三四五六七八九十百零0-9]+)条|([一二三四五六七八九十百零0-9]+)[、.．])'
             matches = list(re.finditer(article_pattern, full_text))
             
             if not matches:
@@ -397,7 +410,9 @@ class DocumentProcessor:
                     ))
             else:
                 for i, match in enumerate(matches):
-                    article_num = self._chinese_to_number(match.group(1))
+                    # 提取序号：优先从分组1提，否则从分组2提
+                    raw_num = match.group(1) if match.group(1) else match.group(2)
+                    article_num = self._chinese_to_number(raw_num)
                     start = match.start()
                     end = matches[i + 1].start() if i + 1 < len(matches) else len(full_text)
                     article_text = full_text[start:end]
@@ -541,6 +556,13 @@ class EmbeddingGenerator:
         self.model_path = model_path or settings.EMBEDDING_MODEL_PATH
         self.model = None
         self.is_ready = False
+        # 默认尝试 CUDA，若不可用则 CPU
+        self.device = "cuda"
+        logger.info(f"检查 CUDA 可用性: {torch.cuda.is_available()}, 将使用设备: {self.device}")
+
+    def force_gpu(self):
+        """手动指定强制使用 GPU"""
+        self.device = "cuda"
         
     def load_model(self):
         """
@@ -549,8 +571,8 @@ class EmbeddingGenerator:
         try:
             from sentence_transformers import SentenceTransformer
             
-            logger.info(f"正在加载嵌入模型: {self.model_path}")
-            self.model = SentenceTransformer(self.model_path)
+            logger.info(f"正在驱动设备 {self.device} 加载嵌入模型: {self.model_path}")
+            self.model = SentenceTransformer(self.model_path, device=self.device)
             self.is_ready = True
             logger.info("嵌入模型加载完成")
             

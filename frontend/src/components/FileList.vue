@@ -23,12 +23,25 @@
           <div class="file-name">{{ file.file_name }}</div>
           <!-- 法律法规文件元信息 -->
           <div v-if="file.doc_type === 'law'" class="file-meta">
-            <span v-if="file.law_name" class="meta-item law-name">
-              {{ file.law_name }}
-            </span>
-            <span v-if="file.article_number" class="meta-item">
-              第{{ file.article_number }}条
-            </span>
+            <template v-for="meta in [parseLawMetadata(file.file_name)]" :key="meta ? meta.lawName : index">
+              <template v-if="meta">
+                <span class="meta-item law-name">
+                  {{ file.law_name || meta.lawName }}
+                </span>
+                <span class="meta-item date">公布: {{ meta.pubDate }}</span>
+                <span class="meta-item date">施行: {{ meta.effDate }}</span>
+                <span class="meta-item category">{{ meta.category }}</span>
+                <span class="meta-item authority">{{ meta.authority }}</span>
+                <span :class="['meta-item', getStatusClass(meta.status)]">
+                  {{ meta.status }}
+                </span>
+              </template>
+              <template v-else>
+                <span v-if="file.law_name" class="meta-item law-name">
+                  {{ file.law_name }}
+                </span>
+              </template>
+            </template>
           </div>
           <!-- 案例文书文件元信息 -->
           <div v-else-if="file.doc_type === 'case'" class="file-meta">
@@ -86,8 +99,35 @@ export default {
       return '📄'
     }
 
+    const parseLawMetadata = (fileName) => {
+      if (!fileName) return null
+      const parts = fileName.split('_')
+      if (parts.length >= 6) {
+        return {
+          lawName: parts.slice(0, parts.length - 5).join('_'),
+          pubDate: parts[parts.length - 5],
+          effDate: parts[parts.length - 4],
+          category: parts[parts.length - 3],
+          authority: parts[parts.length - 2],
+          status: parts[parts.length - 1].replace(/\.[^/.]+$/, "")
+        }
+      }
+      return null
+    }
+
+    const getStatusClass = (status) => {
+      if (!status) return ''
+      if (status.includes('有效') && !status.includes('尚未生效')) return 'status-effective'
+      if (status.includes('失效') || status.includes('废止')) return 'status-invalid'
+      if (status.includes('尚未生效')) return 'status-pending'
+      if (status.includes('修改')) return 'status-amended'
+      return 'status-default'
+    }
+
     return {
-      getFileIcon
+      getFileIcon,
+      parseLawMetadata,
+      getStatusClass
     }
   }
 }
@@ -201,6 +241,51 @@ export default {
 .meta-item.case-type {
   background: #f0fff4;
   color: #276749;
+}
+
+.meta-item.category {
+  background: #fdf2f8;
+  color: #9d174d;
+}
+
+.meta-item.authority {
+  background: #fffbeb;
+  color: #b45309;
+}
+
+.meta-item.date {
+  background: #eff6ff;
+  color: #1e3a8a;
+}
+
+.meta-item .icon {
+  font-style: normal;
+  margin-right: 2px;
+}
+
+.status-effective {
+  background: #e6ffed;
+  color: #1b5e20;
+}
+
+.status-invalid {
+  background: #fff1f0;
+  color: #c62828;
+}
+
+.status-pending {
+  background: #e6f7ff;
+  color: #0d47a1;
+}
+
+.status-amended {
+  background: #fffbe6;
+  color: #f57f17;
+}
+
+.status-default {
+  background: #f5f5f5;
+  color: #595959;
 }
 
 .file-action {

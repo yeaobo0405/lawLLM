@@ -16,9 +16,14 @@ except ImportError:
     from config import settings
 
 try:
-    from .rag_retriever import HybridRetriever, SearchResult
-except ImportError:
     from modules.rag_retriever import HybridRetriever, SearchResult
+    from agents.supervisor_agent import SupervisorAgent
+except ImportError:
+    import sys
+    import os
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from modules.rag_retriever import HybridRetriever, SearchResult
+    from agents.supervisor_agent import SupervisorAgent
 
 try:
     from .memory_store import ConversationMemory
@@ -94,6 +99,9 @@ class OptimizedLegalWorkflow:
             self.llm, 
             self.context_config
         )
+        
+        # 初始化 Multi-Agent 核心并预热
+        self.supervisor = SupervisorAgent()
     
     def _check_intent_fast(self, query: str) -> IntentResult:
         """
@@ -369,15 +377,7 @@ class OptimizedLegalWorkflow:
     
     def run_stream(self, query: str, session_id: str = "default", user_id: int = 0) -> Generator[str, None, None]:
         """
-        流式运行工作流
-        
-        Args:
-            query: 用户提问
-            session_id: 会话ID
-            user_id: 用户ID
-            
-        Yields:
-            流式输出的文本块
+        流式运行工作流 (Multi-Agent 增强版)
         """
         import json
         if not self.hybrid_retriever.is_ready:
@@ -385,122 +385,87 @@ class OptimizedLegalWorkflow:
             yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
             return
             
+        yield f"data: {json.dumps({'type': 'agent_status', 'content': 'Supervisor'}, ensure_ascii=False)}\n\n"
+        
         rewritten_query, history, summary = self.enhanced_memory.get_processed_context(
             session_id, user_id, query
         )
         
-        if rewritten_query != query:
-            logger.info(f"查询改写: '{query}' -> '{rewritten_query}'")
+        # 使用 Supervisor 智能检测意图
+        intent = self.supervisor.determine_intent(rewritten_query)
         
-        intent_result = self._check_intent_fast(rewritten_query)
-        
-        if not intent_result.is_valid:
-            yield f"data: {json.dumps({'type': 'answer', 'content': '抱歉，我无法回答这个问题。检测到您的请求可能涉及不合规内容。'}, ensure_ascii=False)}\n\n"
-            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
-            return
-        
-        yield f"data: {json.dumps({'type': 'status', 'content': '正在检索相关法律条文...'}, ensure_ascii=False)}\n\n"
-        
+        # 1. Researcher 阶段
+        yield f"data: {json.dumps({'type': 'agent_status', 'content': 'Researcher'}, ensure_ascii=False)}\n\n"
         search_results = self.hybrid_retriever.hybrid_search(rewritten_query)
         
-        is_quality_ok, quality_reason = self._check_search_quality(search_results)
-        
-        if not is_quality_ok:
-            logger.info(f"检索结果质量不佳，使用基座模型回答: {quality_reason}")
-            
-            system_prompt_general = """你是一个专业的法律咨询助手。请基于你的法律知识回答用户的问题。
+        # 将结果同步到右侧面板
+        formatted_results = []
+        for r in search_results:
+            formatted_results.append({
+                "law_name": r.law_name,
+                "article_number": r.article_number,
+                "content": r.content,
+                "doc_type": r.doc_type,
+                "file_path": r.file_path
+            })
+        yield f"data: {json.dumps({'type': 'results', 'content': formatted_results}, ensure_ascii=False)}\n\n"
 
-要求：
-1. 回答要准确、专业
-2. 如果不确定，请明确告知用户
-3. 建议用户咨询专业律师获取具体法律意见
-4. 回答要简洁明了"""
-
-            messages = [SystemMessage(content=system_prompt_general)]
-            
-            if summary:
-                messages.append(SystemMessage(content=f"之前的对话摘要：{summary}"))
-            
-            for msg in history:
-                if msg.get("role") == "user":
-                    messages.append(HumanMessage(content=msg.get("content", "")))
-                elif msg.get("role") == "assistant":
-                    messages.append(AIMessage(content=msg.get("content", "")))
-            
-            messages.append(HumanMessage(content=f"用户问题：{query}"))
-            
-            try:
-                full_answer = ""
-                for chunk in self.llm.stream(messages):
-                    if chunk.content:
-                        full_answer += chunk.content
-                        yield f"data: {json.dumps({'type': 'answer', 'content': chunk.content}, ensure_ascii=False)}\n\n"
-                
-                self.memory_store.add_message(session_id, "user", query, user_id)
-                self.memory_store.add_message(session_id, "assistant", full_answer, user_id)
-                
-                yield f"data: {json.dumps({'type': 'disclaimer', 'content': self.DISCLAIMER}, ensure_ascii=False)}\n\n"
-                yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
-                
-            except Exception as e:
-                logger.error(f"生成回答失败: {str(e)}")
-                yield f"data: {json.dumps({'type': 'error', 'content': '抱歉，系统处理过程中出现错误，请稍后重试。'}, ensure_ascii=False)}\n\n"
-                yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
-            
-            return
-        
-        yield f"data: {json.dumps({'type': 'status', 'content': '正在生成回答...'}, ensure_ascii=False)}\n\n"
-        
+        # 2. Analyst 阶段
+        yield f"data: {json.dumps({'type': 'agent_status', 'content': 'Analyst'}, ensure_ascii=False)}\n\n"
         context = self._build_context(search_results)
+        
+        # 调用真实的 AnalystAgent 进行流式逻辑分析
+        full_reasoning = ""
+        for chunk in self.supervisor.analyst.stream_analyze(user_fact=rewritten_query, law_context=context):
+            if chunk:
+                full_reasoning += chunk
+                yield f"data: {json.dumps({'type': 'reasoning', 'content': chunk}, ensure_ascii=False)}\n\n"
+
+        # 3. 回答与生成阶段 (Drafter)
+        if intent == "DRAFTING":
+            yield f"data: {json.dumps({'type': 'agent_status', 'content': 'Drafter'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'answer', 'content': '正在匹配法律文书模板并为您生成草拟内容...'}, ensure_ascii=False)}\n\n"
+            
+            # 自动选择最合适的模板
+            templates = self.supervisor.drafter.get_available_templates()
+            chosen_template = "civil_complaint.md" # 默认
+            if templates:
+                template_match_prompt = f"根据用户需求：{rewritten_query}\n以下为可用模板：\n{templates}\n请返回最匹配的模板文件名。直接输出文件名。"
+                chosen_template = self.supervisor.call_llm(template_match_prompt, temperature=0.1).strip()
+
+            # 使用流式生成
+            for chunk in self.supervisor.drafter.stream_draft(
+                user_fact=rewritten_query,
+                analysis_result=full_reasoning,
+                template_name=chosen_template
+            ):
+                if chunk:
+                    yield f"data: {json.dumps({'type': 'draft', 'content': chunk}, ensure_ascii=False)}\n\n"
+        
+        # 4. 最终回答 (Auditor 审计)
+        yield f"data: {json.dumps({'type': 'agent_status', 'content': 'Auditor'}, ensure_ascii=False)}\n\n"
         
         system_prompt = """你是一个专业的法律咨询助手。请根据系统检索到的法律条文和案例，回答用户的问题。
 
 要求：
 1. 回答要准确、专业、有法律依据
 2. 引用具体的法律条文时，直接写"第X条"
-3. 回答要简洁明了，避免冗长
-4. 禁止说"根据您提供的"，直接陈述法律内容即可"""
-
+3. 并在回答最后添加一个简洁的风险提示或免责声明（总结性）
+4. 禁止说"根据您提供的"，因为法律法规是系统检索的基础，直接陈述法律内容即可"""
         messages = [SystemMessage(content=system_prompt)]
+        messages.append(HumanMessage(content=f"事实：{query}\n背景：{context}"))
         
-        if summary:
-            messages.append(SystemMessage(content=f"之前的对话摘要：{summary}"))
+        full_answer = ""
+        for chunk in self.llm.stream(messages):
+            if chunk.content:
+                full_answer += chunk.content
+                yield f"data: {json.dumps({'type': 'answer', 'content': chunk.content}, ensure_ascii=False)}\n\n"
         
-        for msg in history:
-            if msg.get("role") == "user":
-                messages.append(HumanMessage(content=msg.get("content", "")))
-            elif msg.get("role") == "assistant":
-                messages.append(AIMessage(content=msg.get("content", "")))
+        self.memory_store.add_message(session_id, "user", query, user_id)
+        self.memory_store.add_message(session_id, "assistant", full_answer, user_id)
         
-        user_message = f"""用户问题：{query}
-
-参考法律条文和案例：
-{context}
-
-请根据以上信息回答用户问题。"""
-        
-        messages.append(HumanMessage(content=user_message))
-        
-        try:
-            full_answer = ""
-            for chunk in self.llm.stream(messages):
-                if chunk.content:
-                    full_answer += chunk.content
-                    yield f"data: {json.dumps({'type': 'answer', 'content': chunk.content}, ensure_ascii=False)}\n\n"
-            
-            full_answer = self._add_source_buttons(full_answer, search_results)
-            
-            self.memory_store.add_message(session_id, "user", query, user_id)
-            self.memory_store.add_message(session_id, "assistant", full_answer, user_id)
-            
-            yield f"data: {json.dumps({'type': 'replace', 'content': full_answer}, ensure_ascii=False)}\n\n"
-            
-            yield f"data: {json.dumps({'type': 'disclaimer', 'content': self.DISCLAIMER}, ensure_ascii=False)}\n\n"
-            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
-            
-        except Exception as e:
-            logger.error(f"流式工作流执行失败: {str(e)}")
-            yield f"data: {json.dumps({'type': 'error', 'content': '抱歉，系统处理过程中出现错误，请稍后重试。'}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'disclaimer', 'content': self.DISCLAIMER}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
     
     def clear_memory(self, session_id: str = "default", user_id: int = 0):
         """

@@ -94,18 +94,25 @@ class MilvusManager:
         except Exception as e:
             logger.error(f"断开Milvus连接失败: {str(e)}")
     
-    def create_collection(self) -> bool:
+    def create_collection(self, force: bool = False) -> bool:
         """
         创建向量集合
         
+        Args:
+            force: 是否强制删除并重新创建（清空数据）
+            
         Returns:
             创建是否成功
         """
         try:
             if utility.has_collection(self.collection_name):
-                logger.info(f"集合 {self.collection_name} 已存在")
-                self.collection = Collection(self.collection_name)
-                return True
+                if force:
+                    logger.info(f"正在删除旧集合: {self.collection_name}")
+                    utility.drop_collection(self.collection_name)
+                else:
+                    logger.info(f"集合 {self.collection_name} 已存在")
+                    self.collection = Collection(self.collection_name)
+                    return True
             
             fields = [
                 FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
@@ -572,6 +579,8 @@ class HybridRetriever:
             # 1. 优先尝试从缓存加载
             if hasattr(settings, 'BM25_CACHE_PATH') and self.bm25_retriever.load_from_cache(settings.BM25_CACHE_PATH):
                 self.is_bm25_built = True
+                self.is_ready = True  # ✅ 修复：缓存加载成功后同样需要设置就绪状态
+                logger.info(">>> 系统已从 BM25 缓存加载完毕，进入就绪状态 <<<")
                 return
 
             # 2. 缓存不可用，执行构建流程
@@ -584,12 +593,18 @@ class HybridRetriever:
                 # 3. 成功后保存到缓存
                 if hasattr(settings, 'BM25_CACHE_PATH'):
                     self.bm25_retriever.save_to_cache(settings.BM25_CACHE_PATH)
+            else:
+                logger.warning("Milvus 中暂无文档，BM25 索引为空，但系统仍将进入就绪状态")
             
-            # 当向量引擎和BM25都准备好时（逻辑上这里主要关注BM25完成后的整体状态）
+            # 无论是否有文档，只要流程完成就标记为就绪
             self.is_ready = True
+            logger.info(">>> BM25 索引构建完毕，系统已进入就绪状态 <<<")
                     
         except Exception as e:
             logger.error(f"构建BM25索引失败: {str(e)}")
+            # 即使 BM25 构建失败，仍设置 is_ready 以允许系统使用纯向量检索回退
+            self.is_ready = True
+            logger.warning("BM25 构建失败，系统将以纯向量检索模式运行")
     
     def hybrid_search(self, query: str, top_k: int = 5) -> List[SearchResult]:
         """
@@ -639,7 +654,7 @@ class HybridRetriever:
         except Exception as e:
             logger.error(f"混合检索失败: {str(e)}")
             return []
-    
+
     def _merge_results(
         self, 
         vector_results: List[Dict[str, Any]], 

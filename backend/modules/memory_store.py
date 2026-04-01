@@ -69,6 +69,29 @@ class ConversationMemory:
             )
         ''')
         
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS drafts (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL DEFAULT 0,
+                doc_type TEXT NOT NULL,
+                case_facts TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # 尝试为旧版表添加 user_id 列，如果已存在会报 OperationalError 并被忽略
+        try:
+            cursor.execute('ALTER TABLE conversations ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0')
+        except sqlite3.OperationalError:
+            pass
+            
+        try:
+            cursor.execute('ALTER TABLE summaries ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0')
+        except sqlite3.OperationalError:
+            pass
+        
         conn.commit()
         conn.close()
         logger.info(f"对话记忆数据库初始化完成: {self.db_path}")
@@ -378,3 +401,78 @@ class ConversationMemory:
         cursor.execute('DELETE FROM summaries WHERE session_id = ? AND user_id = ?', (session_id, user_id))
         conn.commit()
         conn.close()
+
+    def save_draft(self, draft_id: str, user_id: int, doc_type: str, case_facts: str, content: str):
+        """保存文书草搞"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        now = datetime.now().isoformat()
+        
+        cursor.execute('''
+            INSERT INTO drafts (id, user_id, doc_type, case_facts, content, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                doc_type=excluded.doc_type,
+                case_facts=excluded.case_facts,
+                content=excluded.content,
+                updated_at=excluded.updated_at
+        ''', (draft_id, user_id, doc_type, case_facts, content, now, now))
+        
+        conn.commit()
+        conn.close()
+
+    def get_user_drafts(self, user_id: int) -> List[Dict]:
+        """获取用户的文书列表（不含全文以加快加载）"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, doc_type, case_facts, updated_at
+            FROM drafts
+            WHERE user_id = ?
+            ORDER BY updated_at DESC
+        ''', (user_id,))
+        
+        drafts = []
+        for row in cursor.fetchall():
+            drafts.append({
+                "id": row[0],
+                "doc_type": row[1],
+                "case_facts_summary": row[2][:50] + "..." if len(row[2]) > 50 else row[2],
+                "updated_at": row[3]
+            })
+            
+        conn.close()
+        return drafts
+
+    def get_draft(self, draft_id: str, user_id: int) -> Optional[Dict]:
+        """获取单个文书的完整内容"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, doc_type, case_facts, content, updated_at
+            FROM drafts
+            WHERE id = ? AND user_id = ?
+        ''', (draft_id, user_id))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return {
+                "id": row[0],
+                "doc_type": row[1],
+                "case_facts": row[2],
+                "content": row[3],
+                "updated_at": row[4]
+            }
+        return None
+
+    def delete_draft(self, draft_id: str, user_id: int) -> bool:
+        """删除单个文书"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM drafts WHERE id = ? AND user_id = ?', (draft_id, user_id))
+        deleted_count = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return deleted_count > 0
