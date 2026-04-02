@@ -585,13 +585,21 @@ export default {
                 } else if (data.type === 'agent_status') {
                   currentAgent.value = data.content
                 } else if (data.type === 'results') {
-                  // 如果回答还没开始，先暂存结果
                   const newLaws = data.content
-                  if (!assistantMessage) {
-                    pendingResults = newLaws
+                  if (data.overwrite) {
+                    // 全量覆盖逻辑
+                    retrievedLaws.value = newLaws
+                    if (assistantMessage) {
+                      assistantMessage.searchResults = [...newLaws]
+                    }
                   } else {
-                    retrievedLaws.value = mergeUniqueLaws(newLaws, retrievedLaws.value)
-                    assistantMessage.searchResults = [...retrievedLaws.value]
+                    // 如果回答还没开始，先暂存结果
+                    if (!assistantMessage) {
+                      pendingResults = newLaws
+                    } else {
+                      retrievedLaws.value = mergeUniqueLaws(newLaws, retrievedLaws.value)
+                      assistantMessage.searchResults = [...retrievedLaws.value]
+                    }
                   }
                 } else if (data.type === 'reasoning') {
                   // 推理性回答的处理

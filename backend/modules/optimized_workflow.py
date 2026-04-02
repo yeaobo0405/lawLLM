@@ -3,6 +3,9 @@
 支持流式输出，简化流程，增强上下文处理
 """
 import logging
+import re
+import json
+import cn2an
 from typing import Dict, Any, List, Optional, Generator
 from dataclasses import dataclass
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -215,6 +218,41 @@ class OptimizedLegalWorkflow:
                         break
         
         return answer
+
+    def _is_law_cited(self, law_name: str, article_number: str, text: str) -> bool:
+        """
+        检查法条是否在文本中被引用
+        """
+        if not article_number and not law_name:
+            return False
+            
+        # 1. 优先检查法条编号模式支持 (如 "第12条", "第十二条", "第 12 条")
+        if article_number:
+            pattern = rf'第\s*([0-9\u4e00-\u9fa5]+)\s*条'
+            matches = re.findall(pattern, text)
+            
+            target_num = str(article_number)
+            for m in matches:
+                try:
+                    # 统一转为阿拉伯数字比较
+                    norm_val = str(cn2an.cn2an(m.strip(), "normal"))
+                    if norm_val == target_num:
+                        return True
+                except:
+                    if m.strip() == target_num:
+                        return True
+        
+        # 2. 如果提供了法律名称且没有指定具体条号（或者是笼统引用了法律），也可以认为引用了相关部分
+        if law_name:
+            # 去掉书名号进行宽匹配
+            clean_name = law_name.replace("《", "").replace("》", "")
+            # 搜索全文是否有法律名
+            if clean_name in text or f"《{clean_name}》" in text:
+                # 这种情况下，如果检索出的结果正好属于这部法，可以考虑保留作为参考背景
+                # 特别是在没有找到任何具体条号引用的情况下
+                return True
+                
+        return False
     
     def run_fast(self, query: str, session_id: str = "default", user_id: int = 0) -> Dict[str, Any]:
         """
@@ -354,6 +392,14 @@ class OptimizedLegalWorkflow:
             response = invoke_llm(messages)
             answer = response.content
             
+            # 过滤正式回答中引用的法条
+            final_results = []
+            for r in search_results:
+                if r.doc_type == "case":
+                    final_results.append(r)
+                elif r.doc_type == "law" and self._is_law_cited(r.law_name, r.article_number, answer):
+                    final_results.append(r)
+            
             answer = self._add_source_buttons(answer, search_results)
             
             self.memory_store.add_message(session_id, "user", query, user_id)
@@ -363,7 +409,15 @@ class OptimizedLegalWorkflow:
                 "success": True,
                 "answer": answer,
                 "disclaimer": self.DISCLAIMER,
-                "search_results": []
+                "search_results": [
+                    {
+                        "law_name": r.law_name,
+                        "article_number": r.article_number,
+                        "content": r.content,
+                        "doc_type": r.doc_type,
+                        "file_path": r.file_path
+                    } for r in final_results
+                ]
             }
             
         except Exception as e:
@@ -463,6 +517,31 @@ class OptimizedLegalWorkflow:
         
         self.memory_store.add_message(session_id, "user", query, user_id)
         self.memory_store.add_message(session_id, "assistant", full_answer, user_id)
+        
+        # 5. 过滤与同步：只保留正式回答中引用的法条
+        final_results = []
+        for r in search_results:
+            # 检查是否在正式回答中引用
+            if r.doc_type == "law" and self._is_law_cited(r.law_name, r.article_number, full_answer):
+                final_results.append({
+                    "law_name": r.law_name,
+                    "article_number": r.article_number,
+                    "content": r.content,
+                    "doc_type": r.doc_type,
+                    "file_path": r.file_path
+                })
+            # 案例目前不强制引用（由于 prompt 主要是针对法条）
+            elif r.doc_type == "case":
+                final_results.append({
+                    "law_name": r.law_name,
+                    "article_number": r.article_number,
+                    "content": r.content,
+                    "doc_type": r.doc_type,
+                    "file_path": r.file_path
+                })
+        
+        # 发送覆盖指令，让前端更新法条列表
+        yield f"data: {json.dumps({'type': 'results', 'content': final_results, 'overwrite': True}, ensure_ascii=False)}\n\n"
         
         yield f"data: {json.dumps({'type': 'disclaimer', 'content': self.DISCLAIMER}, ensure_ascii=False)}\n\n"
         yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
