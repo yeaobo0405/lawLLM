@@ -759,7 +759,7 @@ export default {
               role: msg.role,
               content: msg.content,
               reasoning: msg.reasoning || '',
-              searchResults: msg.search_results ? JSON.parse(msg.search_results) : []
+              searchResults: msg.search_results || []
             }
             
             // 从历史消息中恢复全局法条参考

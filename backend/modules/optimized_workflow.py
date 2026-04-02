@@ -402,8 +402,19 @@ class OptimizedLegalWorkflow:
             
             answer = self._add_source_buttons(answer, search_results)
             
+            # 格式化最终结果用于存储
+            persist_results = [
+                {
+                    "law_name": r.law_name,
+                    "article_number": r.article_number,
+                    "content": r.content,
+                    "doc_type": r.doc_type,
+                    "file_path": r.file_path
+                } for r in final_results
+            ]
+            
             self.memory_store.add_message(session_id, "user", query, user_id)
-            self.memory_store.add_message(session_id, "assistant", answer, user_id)
+            self.memory_store.add_message(session_id, "assistant", answer, user_id, search_results=persist_results)
             
             return {
                 "success": True,
@@ -516,7 +527,6 @@ class OptimizedLegalWorkflow:
                 yield f"data: {json.dumps({'type': 'answer', 'content': chunk.content}, ensure_ascii=False)}\n\n"
         
         self.memory_store.add_message(session_id, "user", query, user_id)
-        self.memory_store.add_message(session_id, "assistant", full_answer, user_id)
         
         # 5. 过滤与同步：只保留正式回答中引用的法条
         final_results = []
@@ -542,6 +552,16 @@ class OptimizedLegalWorkflow:
         
         # 发送覆盖指令，让前端更新法条列表
         yield f"data: {json.dumps({'type': 'results', 'content': final_results, 'overwrite': True}, ensure_ascii=False)}\n\n"
+        
+        # 将回答保存至数据库（包含最终过滤后的法条和思考过程）
+        self.memory_store.add_message(
+            session_id, 
+            "assistant", 
+            full_answer, 
+            user_id, 
+            search_results=final_results,
+            reasoning=full_reasoning
+        )
         
         yield f"data: {json.dumps({'type': 'disclaimer', 'content': self.DISCLAIMER}, ensure_ascii=False)}\n\n"
         yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"

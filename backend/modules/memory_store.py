@@ -38,6 +38,8 @@ class ConversationMemory:
                 session_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
+                reasoning TEXT,
+                search_results TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -88,6 +90,16 @@ class ConversationMemory:
             pass
             
         try:
+            cursor.execute('ALTER TABLE conversations ADD COLUMN search_results TEXT')
+        except sqlite3.OperationalError:
+            pass
+            
+        try:
+            cursor.execute('ALTER TABLE conversations ADD COLUMN reasoning TEXT')
+        except sqlite3.OperationalError:
+            pass
+            
+        try:
             cursor.execute('ALTER TABLE summaries ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0')
         except sqlite3.OperationalError:
             pass
@@ -96,7 +108,15 @@ class ConversationMemory:
         conn.close()
         logger.info(f"对话记忆数据库初始化完成: {self.db_path}")
     
-    def add_message(self, session_id: str, role: str, content: str, user_id: int = 0):
+    def add_message(
+        self, 
+        session_id: str, 
+        role: str, 
+        content: str, 
+        user_id: int = 0, 
+        search_results: Optional[List] = None,
+        reasoning: Optional[str] = None
+    ):
         """
         添加一条对话记录
         
@@ -105,14 +125,18 @@ class ConversationMemory:
             role: 角色 (user/assistant)
             content: 内容
             user_id: 用户ID
+            search_results: 关联的检索结果/法条
+            reasoning: 思考过程
         """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
+        search_results_json = json.dumps(search_results, ensure_ascii=False) if search_results else None
+        
         cursor.execute('''
-            INSERT INTO conversations (user_id, session_id, role, content, created_at)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (user_id, session_id, role, content, datetime.now().isoformat()))
+            INSERT INTO conversations (user_id, session_id, role, content, reasoning, search_results, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (user_id, session_id, role, content, reasoning, search_results_json, datetime.now().isoformat()))
         
         conn.commit()
         conn.close()
@@ -133,7 +157,7 @@ class ConversationMemory:
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT role, content 
+            SELECT role, content, reasoning, search_results 
             FROM conversations 
             WHERE session_id = ? AND user_id = ?
             ORDER BY created_at DESC 
@@ -143,7 +167,14 @@ class ConversationMemory:
         rows = cursor.fetchall()
         conn.close()
         
-        history = [{"role": row[0], "content": row[1]} for row in reversed(rows)]
+        history = []
+        for row in reversed(rows):
+            history.append({
+                "role": row[0], 
+                "content": row[1],
+                "reasoning": row[2] or "",
+                "search_results": row[3] if row[3] else []
+            })
         return history
     
     def clear_history(self, session_id: str, user_id: int = 0):
@@ -232,7 +263,7 @@ class ConversationMemory:
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT role, content, created_at
+            SELECT role, content, reasoning, search_results, created_at
             FROM conversations 
             WHERE session_id = ? AND user_id = ?
             ORDER BY created_at ASC
@@ -243,7 +274,9 @@ class ConversationMemory:
             messages.append({
                 "role": row[0],
                 "content": row[1],
-                "created_at": row[2]
+                "reasoning": row[2] or "",
+                "search_results": json.loads(row[3]) if row[3] else [],
+                "created_at": row[4]
             })
         
         conn.close()
