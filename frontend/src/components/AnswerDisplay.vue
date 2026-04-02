@@ -10,41 +10,60 @@
       <div 
         v-for="(message, index) in messages" 
         :key="index"
-        :class="['message', message.role]"
+        :class="['message-item', message.role]"
       >
         <div class="message-header">
           <span class="role-label">{{ message.role === 'user' ? '用户' : '法律助手' }}</span>
         </div>
         
-        <!-- 推理过程/思维链 (流式思考) -->
-        <div v-if="message.role === 'assistant' && (message.reasoning || message.thinking)" class="thinking-block">
-          <div class="thinking-header" @click="toggleReasoning(index)">
-            <span class="thinking-icon">{{ message.content ? '✓' : '🧠' }}</span>
-            <span class="thinking-title">思考过程</span>
-            <span class="thinking-status">{{ message.content ? '已完成' : '正在思考...' }}</span>
-            <span class="expand-icon">{{ isReasoningCollapsed(index) ? '展开' : '收起' }}</span>
+        <!-- 推理过程/思维链 (独立于气泡外) -->
+        <div v-if="message.role === 'assistant' && (message.reasoning || message.thinking)" class="thinking-wrapper">
+          <div :class="['thinking-block', { 'collapsed': isReasoningCollapsed(index) }]">
+            <div class="thinking-header" @click="toggleReasoning(index)">
+              <div class="thinking-left">
+                <span class="thinking-brain-icon">🧠</span>
+                <span class="thinking-title">思考过程</span>
+                <span v-if="!message.content" class="thinking-loading-dots">
+                  <span>.</span><span>.</span><span>.</span>
+                </span>
+              </div>
+              <div class="thinking-right">
+                <span v-if="message.content" class="thinking-done-tag">已完成</span>
+                <span class="expand-toggle-btn">
+                  <svg v-if="isReasoningCollapsed(index)" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 9l-7 7-7-7"/></svg>
+                  <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 15l7-7 7 7"/></svg>
+                </span>
+              </div>
+            </div>
+            <div v-show="!isReasoningCollapsed(index)" class="thinking-content markdown-body" v-html="formatThinking(message.reasoning || message.thinking)"></div>
           </div>
-          <div v-show="!isReasoningCollapsed(index)" class="thinking-content markdown-body" v-html="formatThinking(message.reasoning)"></div>
         </div>
 
-        <div class="message-content" v-html="formatContent(message.content)" @click="handleContentClick"></div>
-        
-        <div v-if="message.disclaimer" class="disclaimer">
-          {{ message.disclaimer }}
+        <div 
+          v-if="message.role === 'user' || message.content || message.disclaimer" 
+          :class="['message-bubble', message.role]"
+        >
+          <div class="message-content" v-html="formatContent(message.content)" @click="handleContentClick"></div>
+          
+          <div v-if="message.disclaimer" class="disclaimer">
+            {{ message.disclaimer }}
+          </div>
         </div>
       </div>
       
-      <div v-if="showLoadingIndicator" class="message assistant loading">
+      <div v-if="showLoadingIndicator" class="message-item assistant loading">
         <div class="message-header">
           <span class="role-label">法律助手</span>
         </div>
-        <div class="message-content">
-          <div class="typing-indicator">
-            <span></span>
-            <span></span>
-            <span></span>
+        <div class="message-bubble assistant">
+          <div class="message-content">
+            <div class="typing-indicator">
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+            正在思考中...
           </div>
-          正在思考中...
         </div>
       </div>
     </div>
@@ -288,25 +307,42 @@ export default {
   font-size: 14px;
 }
 
-.message {
-  margin-bottom: 20px;
-  padding: 15px;
-  border-radius: 8px;
+.message-item {
+  margin-bottom: 24px;
   max-width: 90%;
+  display: flex;
+  flex-direction: column;
 }
 
-.message.user {
-  background-color: #ebf8ff;
+.message-item.user {
   margin-left: auto;
-  border: 1px solid #bee3f8;
+  align-items: flex-end;
 }
 
-.message.assistant {
+.message-item.assistant {
+  margin-right: auto;
+  align-items: flex-start;
+}
+
+.message-bubble {
+  padding: 15px;
+  border-radius: 12px;
+  width: 100%;
+}
+
+.message-bubble.user {
+  background-color: #ebf8ff;
+  border: 1px solid #bee3f8;
+  border-top-right-radius: 2px;
+}
+
+.message-bubble.assistant {
   background-color: #f7fafc;
   border: 1px solid #e2e8f0;
+  border-top-left-radius: 2px;
 }
 
-.message.loading {
+.message-item.loading {
   opacity: 0.8;
 }
 
@@ -400,56 +436,106 @@ export default {
   white-space: pre-line;
 }
 
-/* 推理块样式 */
+/* 推理块外层包裹 */
+.thinking-wrapper {
+  margin-bottom: 8px;
+  width: 100%;
+}
+
 .thinking-block {
-  margin-bottom: 12px;
-  border: 1px solid #edf2f7;
-  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
   background-color: #f8fafc;
   overflow: hidden;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+.thinking-block.collapsed {
+  border-color: #edf2f7;
 }
 
 .thinking-header {
-  padding: 8px 12px;
+  padding: 8px 16px;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   cursor: pointer;
-  background-color: #f1f5f9;
+  background-color: #ffffff;
   user-select: none;
+  height: 40px;
 }
 
-.thinking-icon {
-  margin-right: 8px;
+.thinking-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.thinking-brain-icon {
   font-size: 14px;
 }
 
 .thinking-title {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
   color: #64748b;
-  flex: 1;
 }
 
-.thinking-status {
-  font-size: 11px;
+.thinking-loading-dots {
+  display: flex;
+  gap: 2px;
+}
+
+.thinking-loading-dots span {
+  font-size: 16px;
+  line-height: 1;
   color: #94a3b8;
-  margin-right: 12px;
+  animation: dots-pulse 1.4s infinite;
 }
 
-.expand-icon {
+.thinking-loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+.thinking-loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes dots-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
+.thinking-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.thinking-done-tag {
   font-size: 11px;
-  color: #3b82f6;
-  text-decoration: underline;
+  color: #10b981;
+  background: #ecfdf5;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.expand-toggle-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  transition: color 0.2s;
+}
+
+.thinking-header:hover .expand-toggle-btn {
+  color: #64748b;
 }
 
 .thinking-content {
-  padding: 12px;
+  padding: 16px;
   font-size: 13px;
   color: #475569;
-  line-height: 1.6;
-  border-top: 1px solid #edf2f7;
-  background-color: white;
-  font-style: italic;
+  line-height: 1.7;
+  border-top: 1px solid #f1f5f9;
+  background-color: #f8fafc;
 }
 
 .source-modal-overlay {

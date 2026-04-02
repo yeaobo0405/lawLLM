@@ -301,19 +301,26 @@ export default {
     const drafts = ref([])
     const activeDraftId = ref('')
 
-    // 辅助函数：合并并去重法条
-    const mergeUniqueLaws = (newLaws, existingLaws) => {
-      if (!newLaws) return existingLaws
-      const existingKeys = new Set(existingLaws.map(l => `${l.law_name}-${l.article_number}`))
-      const filtered = newLaws.filter(law => {
+    // 辅助函数：根据 (法律名, 条号) 进行去重
+    const deduplicateLaws = (laws) => {
+      if (!laws || !Array.isArray(laws)) return []
+      const seen = new Set()
+      return laws.filter(law => {
+        if (!law.law_name || !law.article_number) return true // 案例等没条号的不强制去重（或按需处理）
         const key = `${law.law_name}-${law.article_number}`
-        if (!existingKeys.has(key)) {
-          existingKeys.add(key)
+        if (!seen.has(key)) {
+          seen.add(key)
           return true
         }
         return false
       })
-      return [...existingLaws, ...filtered]
+    }
+
+    // 辅助函数：合并并去重法条
+    const mergeUniqueLaws = (newLaws, existingLaws) => {
+      if (!newLaws) return existingLaws
+      const allLaws = [...existingLaws, ...newLaws]
+      return deduplicateLaws(allLaws)
     }
 
     const loadDrafts = async () => {
@@ -485,6 +492,8 @@ export default {
       currentUserId.value = 0
       messages.value = []
       sessions.value = []
+      retrievedLaws.value = []
+      currentDraft.value = ''
     }
 
     const loadFiles = async () => {
@@ -588,14 +597,15 @@ export default {
                   const newLaws = data.content
                   if (data.overwrite) {
                     // 全量覆盖逻辑
-                    retrievedLaws.value = newLaws
+                    const dedupedLaws = deduplicateLaws(newLaws)
+                    retrievedLaws.value = dedupedLaws
                     if (assistantMessage) {
-                      assistantMessage.searchResults = [...newLaws]
+                      assistantMessage.searchResults = [...dedupedLaws]
                     }
                   } else {
-                    // 如果回答还没开始，先暂存结果
-                    if (!assistantMessage) {
-                      pendingResults = newLaws
+                    // 如果正式回答还没开始，先暂存结果
+                    if (!assistantMessage || !assistantMessage.content) {
+                      pendingResults = mergeUniqueLaws(newLaws, pendingResults)
                     } else {
                       retrievedLaws.value = mergeUniqueLaws(newLaws, retrievedLaws.value)
                       assistantMessage.searchResults = [...retrievedLaws.value]
@@ -612,13 +622,6 @@ export default {
                     }
                     messages.value.push(newMsg)
                     assistantMessage = messages.value[messages.value.length - 1]
-                    
-                    // 当思考过程开始时，如果已经收到了检索结果，立即同步显示
-                    if (pendingResults.length > 0) {
-                      retrievedLaws.value = mergeUniqueLaws(pendingResults, retrievedLaws.value)
-                      assistantMessage.searchResults = [...retrievedLaws.value]
-                      pendingResults = []
-                    }
                   }
                   assistantMessage.reasoning += data.content
                   currentReasoning.value = assistantMessage.reasoning
@@ -779,6 +782,7 @@ export default {
       sessionId.value = generateSessionId()
       messages.value = []
       retrievedLaws.value = [] // 新会话法条为空
+      currentDraft.value = ''
     }
 
     const deleteSession = async (sid) => {
@@ -793,9 +797,11 @@ export default {
         })
         
         if (response.data.success) {
-          // 如果删除的是当前会话，清空消息
+          // 如果删除的是当前会话，清空显示内容
           if (sessionId.value === sid) {
             messages.value = []
+            retrievedLaws.value = []
+            currentDraft.value = ''
             sessionId.value = generateSessionId()
           }
           // 刷新会话列表
