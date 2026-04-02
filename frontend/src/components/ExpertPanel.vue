@@ -1,18 +1,28 @@
 <template>
   <div class="expert-panel">
     <div class="panel-header">
-      <div class="header-title">
-        法条参考
-        <span v-if="displayedLaws.length > 0" class="badge">{{ displayedLaws.length }}</span>
+      <div class="header-content">
+        <div class="header-title">
+          法条参考
+          <span v-if="filteredLaws.length > 0" class="badge">{{ filteredLaws.length }}</span>
+        </div>
+        <div class="header-tools">
+          <input 
+            type="text" 
+            v-model="filterText" 
+            placeholder="筛选法条或内容..." 
+            class="filter-input"
+          />
+        </div>
       </div>
     </div>
     
     <div class="panel-content" ref="scrollContainer">
       <!-- 法条参考 -->
       <div class="tab-pane">
-        <div v-if="displayedLaws.length > 0" class="laws-list">
+        <div v-if="filteredLaws.length > 0" class="laws-list">
           <div 
-            v-for="(law, index) in displayedLaws" 
+            v-for="(law, index) in filteredLaws" 
             :key="index" 
             :ref="el => { if (el) lawRefs[law.article_number] = el }"
             :class="['law-item clickable', { 'highlighted': highlightedLaw === law.article_number }]"
@@ -32,7 +42,7 @@
 </template>
 
 <script setup>
-import { ref, watch, onBeforeUpdate, nextTick } from 'vue'
+import { ref, watch, onBeforeUpdate, nextTick, computed } from 'vue'
 
 const emit = defineEmits(['preview'])
 
@@ -44,6 +54,16 @@ const props = defineProps({
 })
 
 const displayedLaws = ref([])
+const filterText = ref('')
+const filteredLaws = computed(() => {
+  if (!filterText.value.trim()) return displayedLaws.value
+  const query = filterText.value.toLowerCase()
+  return displayedLaws.value.filter(law => 
+    law.law_name.toLowerCase().includes(query) || 
+    law.content.toLowerCase().includes(query) ||
+    String(law.article_number).includes(query)
+  )
+})
 const lawRefs = ref({})
 const highlightedLaw = ref(null)
 const scrollContainer = ref(null)
@@ -91,7 +111,7 @@ watch(() => props.laws, async (newLaws) => {
 
 const handleLawClick = (law) => {
   if (law.file_path) {
-    emit('preview', law.file_path)
+    emit('preview', law.file_path, law.article_number)
   }
 }
 
@@ -164,9 +184,36 @@ defineExpose({
   margin-left: 4px;
 }
 
+.header-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.header-tools {
+  flex: 1;
+  margin-left: 15px;
+}
+
+.filter-input {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  font-size: 12px;
+  outline: none;
+}
+
+.filter-input:focus {
+  border-color: #3182ce;
+  box-shadow: 0 0 0 2px rgba(66, 153, 225, 0.2);
+}
+
 .panel-content {
   flex: 1;
   overflow-y: auto;
+  background-color: #f8fafc;
   padding: 16px;
   scroll-behavior: smooth;
 }

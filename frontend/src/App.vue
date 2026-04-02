@@ -227,7 +227,7 @@
             </div>
           </div>
           <div class="preview-body">
-            <pre v-if="previewContent">{{ previewContent }}</pre>
+            <pre v-if="previewContent" ref="previewPre">{{ previewContent }}</pre>
             <p v-else class="loading-text">加载中...</p>
           </div>
         </div>
@@ -237,7 +237,7 @@
 </template>
 
 <script>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import axios from 'axios'
 import { marked } from 'marked'
 import QueryInput from './components/QueryInput.vue'
@@ -641,6 +641,8 @@ export default {
                     assistantMessage = messages.value[messages.value.length - 1]
                   }
                   assistantMessage.content = data.content
+                } else if (data.type === 'agent_status') {
+                  currentAgent.value = data.content
                 } else if (data.type === 'disclaimer') {
                   if (assistantMessage) {
                     assistantMessage.disclaimer = data.content
@@ -697,7 +699,8 @@ export default {
       }
     }
 
-    const handleFilePreview = async (filePath) => {
+    const previewPre = ref(null)
+    const handleFilePreview = async (filePath, articleNumber = null) => {
       previewFilePath.value = filePath
       previewFileName.value = filePath.split(/[/\\]/).pop()
       showPreview.value = true
@@ -711,6 +714,9 @@ export default {
         
         if (response.data.success) {
           previewContent.value = response.data.content
+          if (articleNumber) {
+            nextTick(() => scrollPreviewToArticle(articleNumber))
+          }
         } else {
           previewContent.value = '无法加载文件内容: ' + (response.data.message || '未知错误')
         }
@@ -718,6 +724,51 @@ export default {
         console.error('加载文件内容失败:', error)
         previewContent.value = '加载失败，请稍后重试'
       }
+    }
+
+    const scrollPreviewToArticle = (articleNumber) => {
+      if (!previewPre.value || !articleNumber) return
+      
+      const content = previewContent.value
+      // 尝试匹配多种格式：第 12 条, 第十二条
+      const chinese = numberToChinese(articleNumber)
+      const targets = [
+        `第${articleNumber}条`,
+        `第 ${articleNumber} 条`,
+        `第${chinese}条`
+      ]
+      
+      let foundIndex = -1
+      for (const target of targets) {
+        foundIndex = content.indexOf(target)
+        if (foundIndex !== -1) break
+      }
+      
+      if (foundIndex !== -1) {
+        // 计算在大约哪一行（估算）
+        const linesBefore = content.substring(0, foundIndex).split('\n').length
+        const lineHeight = 18 // 根据预览框的行高微调
+        // 使用 nextTick 确保预览框已渲染并计算位置
+        setTimeout(() => {
+          if (previewPre.value && previewPre.value.parentElement) {
+            previewPre.value.parentElement.scrollTop = (linesBefore - 3) * lineHeight
+          }
+        }, 100)
+      }
+    }
+
+    const numberToChinese = (num) => {
+      const chineseNumbers = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十']
+      const n = parseInt(num)
+      if (isNaN(n)) return num
+      if (n <= 10) return chineseNumbers[n]
+      if (n < 20) return '十' + (n % 10 === 0 ? '' : chineseNumbers[n % 10])
+      if (n < 100) {
+        const tens = Math.floor(n / 10)
+        const units = n % 10
+        return chineseNumbers[tens] + '十' + (units === 0 ? '' : chineseNumbers[units])
+      }
+      return num
     }
 
     const closePreview = () => {
@@ -881,7 +932,8 @@ export default {
       loadDraftDetail,
       startNewDraft,
       deleteDraft,
-      saveDraft
+      saveDraft,
+      previewPre
     }
   }
 }

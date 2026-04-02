@@ -655,6 +655,32 @@ class HybridRetriever:
             logger.error(f"混合检索失败: {str(e)}")
             return []
 
+    def _get_hierarchy_weight(self, law_name: str, doc_type: str) -> float:
+        """
+        获取法律层级权重
+        宪法 > 法律 > 司法解释 > 行政法规 > 地方性法规
+        """
+        if not law_name:
+            return 1.0
+            
+        if "宪法" in law_name:
+            return 1.5
+        
+        # doc_type 判断
+        if doc_type == "law":
+            # 进一步细分
+            if "法律" in law_name or "民法典" in law_name or "刑法" in law_name:
+                return 1.4
+            return 1.3
+        elif doc_type == "interpretation" or "解释" in law_name or "规定" in law_name:
+            return 1.2
+        elif "行政法规" in law_name or "条例" in law_name:
+            return 1.1
+        elif "地方" in law_name or "省" in law_name or "市" in law_name:
+            return 0.9
+            
+        return 1.0
+
     def _merge_results(
         self, 
         vector_results: List[Dict[str, Any]], 
@@ -692,7 +718,10 @@ class HybridRetriever:
         final_results = []
         for content, score in rrf_scores.items():
             result = content_map[content].copy()
-            result["combined_score"] = score
+            
+            # 引入层级权重
+            h_weight = self._get_hierarchy_weight(result.get("law_name", ""), result.get("doc_type", ""))
+            result["combined_score"] = score * h_weight
             final_results.append(result)
         
         return sorted(final_results, key=lambda x: x["combined_score"], reverse=True)
