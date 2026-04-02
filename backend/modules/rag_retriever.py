@@ -631,13 +631,16 @@ class HybridRetriever:
             
             combined_results = self._merge_results(vector_results, bm25_results)
             
-            reranked_results = self.reranker.rerank(query, combined_results, top_k=top_k)
+            reranked_results = self.reranker.rerank(query, combined_results, top_k=60) # 先拿多一点重排
             
             search_results = []
             for result in reranked_results:
+                # 给重排分数再次引入层级权重（以确认为最终排序的主要依据）
+                h_weight = self._get_hierarchy_weight(result.get("law_name", ""), result.get("doc_type", "law"))
+                # 统一转为 SearchResult
                 search_results.append(SearchResult(
                     content=result.get("content", ""),
-                    score=result.get("rerank_score", result.get("score", 0)),
+                    score=float(result.get("rerank_score", 0)) * h_weight,
                     law_name=result.get("law_name", ""),
                     chapter=result.get("chapter", ""),
                     article_number=result.get("article_number", ""),
@@ -649,7 +652,9 @@ class HybridRetriever:
                     doc_type=result.get("doc_type", "law")
                 ))
             
-            return search_results
+            # 按加权后的重排分数进行最终排序并取 top_k
+            search_results.sort(key=lambda x: x.score, reverse=True)
+            return search_results[:top_k]
             
         except Exception as e:
             logger.error(f"混合检索失败: {str(e)}")
