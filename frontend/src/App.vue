@@ -525,10 +525,9 @@ export default {
         content: query
       })
       
-      // 重置 Multi-Agent 状态
+      // 重置 Multi-Agent 状态 (保留当前会话的法条参考)
       queryLoading.value = true
       currentAgent.value = 'Supervisor'
-      retrievedLaws.value = []
       currentReasoning.value = null
       currentDraft.value = ''
       
@@ -596,11 +595,11 @@ export default {
                 } else if (data.type === 'results') {
                   const newLaws = data.content
                   if (data.overwrite) {
-                    // 全量覆盖逻辑
-                    const dedupedLaws = deduplicateLaws(newLaws)
-                    retrievedLaws.value = dedupedLaws
+                    // 全量覆盖逻辑 (针对单轮回答的过滤结果进行合并)
+                    const dedupedNewLaws = deduplicateLaws(newLaws)
+                    retrievedLaws.value = mergeUniqueLaws(dedupedNewLaws, retrievedLaws.value)
                     if (assistantMessage) {
-                      assistantMessage.searchResults = [...dedupedLaws]
+                      assistantMessage.searchResults = [...dedupedNewLaws]
                     }
                   } else {
                     // 如果正式回答还没开始，先暂存结果
